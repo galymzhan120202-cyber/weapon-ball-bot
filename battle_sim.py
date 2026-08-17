@@ -839,6 +839,7 @@ def build_battle_clip(battle):
         flash_alpha, flash_xy, flash_style = 0, None, "metal"
         dmg_popup = None
         shake_dx = shake_dy = 0.0
+        punch_age = {}  # fighter_idx -> frames since a hit they were part of
         if not in_intro:
             for hi in range(max(0, idx - 10), idx + 1):
                 if hi not in battle["hit_frame_flags"]:
@@ -858,6 +859,10 @@ def build_battle_clip(battle):
                     amt = max(0.0, (5 - age)) * min(7.0, dmg / 18)
                     shake_dx = (_det_jitter(hi) * 2 - 1) * amt
                     shake_dy = (_det_jitter(hi + 4096) * 2 - 1) * amt
+                if age <= 4:
+                    for fi in (hi1, hi2):
+                        if fi not in punch_age or age < punch_age[fi]:
+                            punch_age[fi] = age
 
         first_blood_age = idx - first_hit_frame if (not in_intro and first_hit_frame is not None) else -1
         if 0 <= first_blood_age <= FIRST_BLOOD_FRAMES:
@@ -948,7 +953,15 @@ def build_battle_clip(battle):
             x, y, ang = st["pos"][i]
             if st["alive"][i]:
                 rot = icons[i].rotate(-ang, resample=Image.BICUBIC)
-                img.alpha_composite(rot, (int(x - icon_size / 2), int(y - icon_size / 2)))
+                if i in punch_age:
+                    # impact "pop": the weapon itself briefly swells right on
+                    # a hit and settles back over a few frames, so the blow
+                    # reads as landing on the object, not just a screen flash.
+                    scale = 1.0 + 0.28 * max(0.0, 1 - punch_age[i] / 4.0)
+                    if scale > 1.001:
+                        pw, ph = int(rot.width * scale), int(rot.height * scale)
+                        rot = rot.resize((pw, ph), Image.BICUBIC)
+                img.alpha_composite(rot, (int(x - rot.width / 2), int(y - rot.height / 2)))
             else:
                 ko_frame = ko_frame_by_idx.get(i)
                 if ko_frame is not None:
