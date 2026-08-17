@@ -665,6 +665,10 @@ def build_battle_clip(battle):
     ko_font = get_font(int(h * 0.026))
     replay_font = get_font(int(h * 0.038))
 
+    underdog_font = get_font(int(h * 0.026))
+    max_power = max(f["power"] for f in fighters)
+    underdog_idx = {i for i, f in enumerate(fighters) if f["power"] <= max_power * 0.75}
+
     replay_range = battle.get("replay_range")
     replay_focus = battle.get("replay_focus") or (w / 2, h / 2)
     REPLAY_ZOOM = 1.18
@@ -941,6 +945,15 @@ def build_battle_clip(battle):
             f2 = get_font(int(base_size * pop * (1.0 if step < 3 else 0.75)))
             tw3 = d2.textlength(word, font=f2)
             d2.text((w / 2 - tw3 / 2, h * 0.42), word, font=f2, fill=color, stroke_width=4, stroke_fill=(0, 0, 0, 255))
+
+            if underdog_idx:
+                fade_in = min(1.0, t / (INTRO_SECONDS * 0.4))
+                for i in underdog_idx:
+                    ux, uy, _ = st["pos"][i]
+                    tag = "UNDERDOG"
+                    tw4 = d2.textlength(tag, font=underdog_font)
+                    d2.text((ux - tw4 / 2, uy - icon_size / 2 - 34), tag, font=underdog_font,
+                             fill=(255, 130, 40, int(255 * fade_in)), stroke_width=2, stroke_fill=(0, 0, 0, int(255 * fade_in)))
 
         in_replay = replay_range is not None and replay_range[0] <= idx < replay_range[1]
         if in_replay:
