@@ -267,15 +267,19 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     space = pymunk.Space()
     space.gravity = (0, 0)
 
-    def spawn(x, y, angle_deg, speed, ctype):
-        body = pymunk.Body(mass=1.0, moment=pymunk.moment_for_circle(1.0, 0, radius))
+    def spawn(x, y, angle_deg, speed, ctype, mass):
+        body = pymunk.Body(mass=mass, moment=pymunk.moment_for_circle(mass, 0, radius))
         body.position = (x, y)
         rad = math.radians(angle_deg)
         body.velocity = (math.cos(rad) * speed, math.sin(rad) * speed)
         body.angular_velocity = rng.uniform(-5.5, 5.5)
         shape = pymunk.Circle(body, radius)
         shape.elasticity = 1.0
-        shape.friction = 0.0
+        # A little friction (fighter-vs-fighter clashes only, walls stay at 0
+        # so bounces off the arena edge stay clean) lets impacts transfer
+        # spin, so a weapon's rotation visibly kicks or stalls on a hit
+        # instead of spinning at one constant rate for the whole fight.
+        shape.friction = 0.28
         shape.collision_type = ctype
         space.add(body, shape)
         return body, shape
@@ -284,13 +288,17 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     spawn_r = min(right_arena - left_arena, bottom_arena - top_arena) * (0.30 if n_fighters <= 2 else 0.33)
     angle_offset = rng.uniform(0, 360)
 
+    # Mass tracks each weapon's "power" stat, so a heavy weapon (Warhammer,
+    # power ~1.4) physically shrugs off a hit that sends a light one (Dagger,
+    # power ~0.8) flying — the collision itself feels like weight, not just
+    # the HP number ticking down.
     bodies, shapes = [], []
     for i in range(n_fighters):
         ang = math.radians(angle_offset + i * 360 / n_fighters)
         x = center_x + math.cos(ang) * spawn_r
         y = center_y + math.sin(ang) * spawn_r
         aim = math.degrees(math.atan2(center_y - y, center_x - x)) + rng.uniform(-25, 25)
-        body, shape = spawn(x, y, aim, speed0, ctype=i + 1)
+        body, shape = spawn(x, y, aim, speed0, ctype=i + 1, mass=fighters[i]["power"])
         bodies.append(body)
         shapes.append(shape)
 
