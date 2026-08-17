@@ -550,6 +550,32 @@ def pick_arena_theme(seed):
     return theme_rng.choice(ARENA_THEMES)
 
 
+# Small wording variety for on-screen text that would otherwise read
+# identically in every single upload (the KO burst label and the finale
+# banner) — picked once per battle from a hash of the seed, independent of
+# the physics RNG stream, same pattern as the arena theme.
+
+WIN_TEXT_TEMPLATES = [
+    "{name} WINS!",
+    "{name} TAKES IT!",
+    "{name} IS VICTORIOUS!",
+    "{name} SURVIVES!",
+    "{name} DOMINATES!",
+]
+
+KO_TEXT_TEMPLATES = [
+    "{name} OUT!",
+    "{name} ELIMINATED!",
+    "{name} DOWN!",
+    "{name} DEFEATED!",
+]
+
+
+def _pick_variant(seed, salt, templates):
+    rng = random.Random(hashlib.sha256((str(seed) + salt).encode()).hexdigest())
+    return rng.choice(templates)
+
+
 def _make_ambient_particles(seed, count, w, h):
     rng = random.Random(hashlib.sha256((str(seed) + "ambient").encode()).hexdigest())
     particles = []
@@ -627,6 +653,8 @@ def build_battle_clip(battle):
 
     theme = pick_arena_theme(battle.get("seed", 0))
     ambient_particles = _make_ambient_particles(battle.get("seed", 0), 16, w, h)
+    win_text_template = _pick_variant(battle.get("seed", 0), "wintext", WIN_TEXT_TEMPLATES)
+    ko_text_template = _pick_variant(battle.get("seed", 0), "kotext", KO_TEXT_TEMPLATES)
 
     obstacles = battle.get("obstacles") or []
     obstacle_radius = battle.get("obstacle_radius", 0)
@@ -756,7 +784,7 @@ def build_battle_clip(battle):
                     continue
                 r = 20 + age * 4
                 d.ellipse([kx - r, ky - r, kx + r, ky + r], outline=(255, 80, 60, pa), width=4)
-                label = f"{fighters[fi]['name']} OUT!"
+                label = ko_text_template.format(name=fighters[fi]['name'])
                 lw = d.textlength(label, font=ko_font)
                 d.text((kx - lw / 2, ky - r - 26), label, font=ko_font, fill=(255, 110, 90, pa), stroke_width=2, stroke_fill=(0, 0, 0, pa))
 
@@ -785,10 +813,13 @@ def build_battle_clip(battle):
             prog = min(1.0, (idx - finale_start) / max(1, fps * 0.35))
             overlay = Image.new("RGBA", (w, h), (0, 0, 0, int(120 * prog)))
             img.alpha_composite(overlay)
-            win_text = f"{battle['winner_name']} WINS!"
+            win_text = win_text_template.format(name=battle['winner_name'])
             scale = 0.6 + 0.4 * prog
             f = get_font(int(win_font.size * scale)) if hasattr(win_font, "size") else win_font
             tw2 = d.textlength(win_text, font=f)
+            if tw2 > w * 0.92 and hasattr(f, "size"):
+                f = get_font(max(24, int(f.size * (w * 0.92) / tw2)))
+                tw2 = d.textlength(win_text, font=f)
             d.text((w / 2 - tw2 / 2, h * 0.5 - 40), win_text, font=f, fill=(255, 215, 60, int(255 * prog)))
 
         if in_intro:
@@ -817,10 +848,12 @@ def build_battle_clip(battle):
             rtxt = "REPLAY"
             rw = d3.textlength(rtxt, font=replay_font)
             d3.text((w / 2 - rw / 2, h * 0.185), rtxt, font=replay_font, fill=(255, 255, 255, int(255 * pulse)), stroke_width=3, stroke_fill=(200, 30, 30, 255))
-        elif not in_intro:
+        elif not in_intro and idx < finale_start:
             # Zoom/pan only the arena region — the title + HP bar strip above
             # it is pasted back untouched so it never gets cropped or blurred
-            # by the camera drift.
+            # by the camera drift. Frozen once the finale banner appears, so
+            # the already-fitted win-text isn't re-scaled/re-panned by a
+            # zoom applied on top of it.
             fx, fy = camera_centers[idx]
             region_h = h - HUD_MARGIN
             crop_w, crop_h = w / MAIN_ZOOM, region_h / MAIN_ZOOM
