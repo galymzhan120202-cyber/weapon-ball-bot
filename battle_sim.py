@@ -464,6 +464,18 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     )
     loser_names = [fighters[i]["name"] for i in range(n_fighters) if i != winner_idx]
 
+    # "Comeback" story: the eventual winner was at some point critically low
+    # on HP (but never eliminated) before pulling out the win — flagged so
+    # the finale banner can call it out specially.
+    min_winner_hp = min((fr["hp"][winner_idx] for fr in frames), default=START_HP)
+    is_comeback = 0 < min_winner_hp < START_HP * 0.20
+
+    # "Double KO": two or more fighters were eliminated in the exact same
+    # recorded frame — i.e. the fight ended in a genuinely simultaneous
+    # mutual finish, not a clean single winner.
+    last_ko_frame = max((k[0] for k in ko_events), default=None)
+    is_double_ko = last_ko_frame is not None and sum(1 for k in ko_events if k[0] == last_ko_frame) >= 2
+
     # Slow-mo replay of the finishing blow: take the real frames right around
     # the last recorded hit, duplicate each one (2x slow motion) and append
     # them as their own segment *after* the live fight but *before* the
@@ -513,6 +525,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         "winner_idx": winner_idx,
         "winner_name": fighters[winner_idx]["name"],
         "loser_names": loser_names,
+        "is_comeback": is_comeback,
+        "is_double_ko": is_double_ko,
         "fps": fps,
         "w": w,
         "h": h,
@@ -568,6 +582,18 @@ KO_TEXT_TEMPLATES = [
     "{name} ELIMINATED!",
     "{name} DOWN!",
     "{name} DEFEATED!",
+]
+
+COMEBACK_WIN_TEMPLATES = [
+    "{name} COMEBACK VICTORY!",
+    "{name} SURVIVES THE COMEBACK!",
+    "{name} CLAWS BACK TO WIN!",
+]
+
+DOUBLE_KO_TEMPLATES = [
+    "DOUBLE KO!",
+    "MUTUAL DESTRUCTION!",
+    "BOTH GO DOWN!",
 ]
 
 FIGHT_WORD_TEMPLATES = ["FIGHT!", "CLASH!", "BEGIN!", "GO!"]
@@ -669,7 +695,12 @@ def build_battle_clip(battle):
 
     theme = pick_arena_theme(battle.get("seed", 0))
     ambient_particles = _make_ambient_particles(battle.get("seed", 0), 16, w, h)
-    win_text_template = _pick_variant(battle.get("seed", 0), "wintext", WIN_TEXT_TEMPLATES)
+    if battle.get("is_double_ko"):
+        win_text_template = _pick_variant(battle.get("seed", 0), "wintext", DOUBLE_KO_TEMPLATES)
+    elif battle.get("is_comeback"):
+        win_text_template = _pick_variant(battle.get("seed", 0), "wintext", COMEBACK_WIN_TEMPLATES)
+    else:
+        win_text_template = _pick_variant(battle.get("seed", 0), "wintext", WIN_TEXT_TEMPLATES)
     ko_text_template = _pick_variant(battle.get("seed", 0), "kotext", KO_TEXT_TEMPLATES)
     fight_word = _pick_variant(battle.get("seed", 0), "fightword", FIGHT_WORD_TEMPLATES)
     replay_text = _pick_variant(battle.get("seed", 0), "replaytext", REPLAY_TEXT_TEMPLATES)
