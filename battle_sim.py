@@ -428,8 +428,21 @@ def _draw_obstacle_shape(kind, radius_px, accent_color):
     return img
 
 
+_OBSTACLE_MATERIAL = {
+    "rock": "blunt",
+    "ice_shard": "metal",
+    "lava_rock": "blunt",
+    "tech_crate": "mechanical",
+    "bone": "wood",
+    "coral": "whip",
+    "gold_crystal": "metal",
+    "sand_rock": "blunt",
+}
+
+
 def make_obstacle_icon(radius_px, accent_color, kind="rock"):
-    return _polish_icon(_draw_obstacle_shape(kind, radius_px, accent_color))
+    material = _OBSTACLE_MATERIAL.get(kind, "blunt")
+    return _polish_icon(_draw_obstacle_shape(kind, radius_px, accent_color), material)
 
 
 # --- Fonts ---------------------------------------------------------------
@@ -748,22 +761,22 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 # of the battle seed, independent of the physics RNG stream.
 
 ARENA_THEMES = [
-    {"name": "Midnight Arena", "top": (14, 12, 26), "bottom": (4, 4, 10), "grid": (255, 255, 255, 12), "border": (90, 90, 110, 255), "particle": (150, 150, 210), "obstacle_kind": "rock", "particle_kind": "up"},
-    {"name": "Neon City", "top": (42, 8, 52), "bottom": (10, 2, 16), "grid": (255, 70, 210, 20), "border": (210, 70, 230, 255), "particle": (255, 90, 220), "obstacle_kind": "tech_crate", "particle_kind": "up"},
-    {"name": "Lava Pit", "top": (48, 10, 4), "bottom": (14, 4, 2), "grid": (255, 130, 45, 18), "border": (235, 100, 35, 255), "particle": (255, 150, 60), "obstacle_kind": "lava_rock", "particle_kind": "up"},
-    {"name": "Ice Cave", "top": (6, 26, 40), "bottom": (2, 8, 14), "grid": (150, 220, 255, 20), "border": (130, 205, 245, 255), "particle": (190, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down"},
-    {"name": "Cyber Grid", "top": (4, 18, 9), "bottom": (2, 4, 4), "grid": (60, 255, 130, 24), "border": (60, 225, 115, 255), "particle": (90, 255, 150), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse"},
-    {"name": "Deep Space", "top": (6, 4, 28), "bottom": (2, 2, 9), "grid": (150, 150, 255, 12), "border": (120, 110, 225, 255), "particle": (205, 205, 255), "obstacle_kind": "rock", "particle_kind": "still_pulse"},
-    {"name": "Toxic Lab", "top": (10, 34, 6), "bottom": (3, 10, 2), "grid": (155, 255, 65, 18), "border": (145, 235, 55, 255), "particle": (175, 255, 85), "obstacle_kind": "tech_crate", "particle_kind": "up"},
-    {"name": "Sunset Coliseum", "top": (48, 16, 27), "bottom": (14, 4, 10), "grid": (255, 165, 125, 16), "border": (235, 125, 155, 255), "particle": (255, 175, 135), "obstacle_kind": "rock", "particle_kind": "sideways"},
-    {"name": "Volcanic Forge", "top": (30, 4, 4), "bottom": (8, 2, 2), "grid": (255, 90, 30, 20), "border": (255, 60, 20, 255), "particle": (255, 120, 40), "obstacle_kind": "lava_rock", "particle_kind": "up"},
-    {"name": "Frozen Peak", "top": (10, 14, 34), "bottom": (3, 5, 12), "grid": (200, 220, 255, 18), "border": (170, 200, 250, 255), "particle": (220, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down"},
-    {"name": "Golden Temple", "top": (40, 28, 4), "bottom": (12, 8, 1), "grid": (255, 210, 90, 20), "border": (240, 190, 70, 255), "particle": (255, 220, 130), "obstacle_kind": "gold_crystal", "particle_kind": "up"},
-    {"name": "Storm Clouds", "top": (18, 20, 28), "bottom": (5, 6, 9), "grid": (170, 190, 220, 18), "border": (150, 175, 210, 255), "particle": (200, 215, 255), "obstacle_kind": "rock", "particle_kind": "rain"},
-    {"name": "Blood Moon", "top": (34, 3, 6), "bottom": (9, 1, 2), "grid": (220, 40, 50, 18), "border": (200, 30, 45, 255), "particle": (255, 70, 80), "obstacle_kind": "bone", "particle_kind": "up"},
-    {"name": "Coral Reef", "top": (4, 30, 32), "bottom": (2, 8, 10), "grid": (100, 230, 210, 18), "border": (90, 220, 200, 255), "particle": (255, 130, 170), "obstacle_kind": "coral", "particle_kind": "bubble"},
-    {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130), "obstacle_kind": "sand_rock", "particle_kind": "sideways"},
-    {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse"},
+    {"name": "Midnight Arena", "top": (14, 12, 26), "bottom": (4, 4, 10), "grid": (255, 255, 255, 12), "border": (90, 90, 110, 255), "particle": (150, 150, 210), "obstacle_kind": "rock", "particle_kind": "up", "impact_fx": "dust_ring"},
+    {"name": "Neon City", "top": (42, 8, 52), "bottom": (10, 2, 16), "grid": (255, 70, 210, 20), "border": (210, 70, 230, 255), "particle": (255, 90, 220), "obstacle_kind": "tech_crate", "particle_kind": "up", "impact_fx": "spark_grid"},
+    {"name": "Lava Pit", "top": (48, 10, 4), "bottom": (14, 4, 2), "grid": (255, 130, 45, 18), "border": (235, 100, 35, 255), "particle": (255, 150, 60), "obstacle_kind": "lava_rock", "particle_kind": "up", "impact_fx": "embers"},
+    {"name": "Ice Cave", "top": (6, 26, 40), "bottom": (2, 8, 14), "grid": (150, 220, 255, 20), "border": (130, 205, 245, 255), "particle": (190, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down", "impact_fx": "frost"},
+    {"name": "Cyber Grid", "top": (4, 18, 9), "bottom": (2, 4, 4), "grid": (60, 255, 130, 24), "border": (60, 225, 115, 255), "particle": (90, 255, 150), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse", "impact_fx": "spark_grid"},
+    {"name": "Deep Space", "top": (6, 4, 28), "bottom": (2, 2, 9), "grid": (150, 150, 255, 12), "border": (120, 110, 225, 255), "particle": (205, 205, 255), "obstacle_kind": "rock", "particle_kind": "still_pulse", "impact_fx": "starburst"},
+    {"name": "Toxic Lab", "top": (10, 34, 6), "bottom": (3, 10, 2), "grid": (155, 255, 65, 18), "border": (145, 235, 55, 255), "particle": (175, 255, 85), "obstacle_kind": "tech_crate", "particle_kind": "up", "impact_fx": "spark_grid"},
+    {"name": "Sunset Coliseum", "top": (48, 16, 27), "bottom": (14, 4, 10), "grid": (255, 165, 125, 16), "border": (235, 125, 155, 255), "particle": (255, 175, 135), "obstacle_kind": "rock", "particle_kind": "sideways", "impact_fx": "dust_ring"},
+    {"name": "Volcanic Forge", "top": (30, 4, 4), "bottom": (8, 2, 2), "grid": (255, 90, 30, 20), "border": (255, 60, 20, 255), "particle": (255, 120, 40), "obstacle_kind": "lava_rock", "particle_kind": "up", "impact_fx": "embers"},
+    {"name": "Frozen Peak", "top": (10, 14, 34), "bottom": (3, 5, 12), "grid": (200, 220, 255, 18), "border": (170, 200, 250, 255), "particle": (220, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down", "impact_fx": "frost"},
+    {"name": "Golden Temple", "top": (40, 28, 4), "bottom": (12, 8, 1), "grid": (255, 210, 90, 20), "border": (240, 190, 70, 255), "particle": (255, 220, 130), "obstacle_kind": "gold_crystal", "particle_kind": "up", "impact_fx": "starburst"},
+    {"name": "Storm Clouds", "top": (18, 20, 28), "bottom": (5, 6, 9), "grid": (170, 190, 220, 18), "border": (150, 175, 210, 255), "particle": (200, 215, 255), "obstacle_kind": "rock", "particle_kind": "rain", "impact_fx": "dust_ring"},
+    {"name": "Blood Moon", "top": (34, 3, 6), "bottom": (9, 1, 2), "grid": (220, 40, 50, 18), "border": (200, 30, 45, 255), "particle": (255, 70, 80), "obstacle_kind": "bone", "particle_kind": "up", "impact_fx": "embers"},
+    {"name": "Coral Reef", "top": (4, 30, 32), "bottom": (2, 8, 10), "grid": (100, 230, 210, 18), "border": (90, 220, 200, 255), "particle": (255, 130, 170), "obstacle_kind": "coral", "particle_kind": "bubble", "impact_fx": "bubbles"},
+    {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130), "obstacle_kind": "sand_rock", "particle_kind": "sideways", "impact_fx": "dust_ring"},
+    {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse", "impact_fx": "spark_grid"},
 ]
 
 
@@ -823,6 +836,55 @@ _IMPACT_PRIORITY = {"metal": 0, "mechanical": 0, "blunt": 1, "wood": 2, "whip": 
 def _impact_style(mat_a, mat_b):
     chosen = mat_a if _IMPACT_PRIORITY.get(mat_a, 0) <= _IMPACT_PRIORITY.get(mat_b, 0) else mat_b
     return "metal" if chosen == "mechanical" else chosen
+
+
+def _draw_arena_impact_fx(d, kind, fx, fy, elapsed, alpha, color):
+    """A secondary, theme-colored burst layered on top of the material hit
+    flash so impacts pick up the arena's identity too (embers in lava,
+    frost in ice caves, glitchy sparks in cyber/toxic/radioactive arenas,
+    bubbles underwater, a starburst in space/gold temple, a dust ring
+    everywhere else) instead of every arena's hits looking the same."""
+    if kind == "embers":
+        for i in range(6):
+            ang = math.radians(i * 60 + int(fx * 3) % 30) - math.pi / 2
+            rr = 10 + elapsed * 34
+            ex, ey = fx + math.cos(ang) * rr, fy + math.sin(ang) * rr - elapsed * 10
+            pr = max(1, 3 * (1 - elapsed))
+            d.ellipse([ex - pr, ey - pr, ex + pr, ey + pr], fill=(*color, int(alpha * 0.75)))
+    elif kind == "frost":
+        for i in range(6):
+            ang = math.radians(i * 60 + int(fx) % 25)
+            r1, r2 = 10, 10 + elapsed * 28
+            x1, y1 = fx + math.cos(ang) * r1, fy + math.sin(ang) * r1
+            x2, y2 = fx + math.cos(ang) * r2, fy + math.sin(ang) * r2
+            d.line([(x1, y1), (x2, y2)], fill=(*color, int(alpha * 0.8)), width=2)
+        rr = 6 + elapsed * 10
+        d.ellipse([fx - rr, fy - rr, fx + rr, fy + rr], outline=(*color, alpha), width=2)
+    elif kind == "spark_grid":
+        rng_seed = int(fx * 7 + fy * 13)
+        for i in range(5):
+            ang = math.radians((rng_seed + i * 73) % 360)
+            rr = 8 + elapsed * 30
+            ex, ey = fx + math.cos(ang) * rr, fy + math.sin(ang) * rr
+            s = max(1, 3 * (1 - elapsed))
+            d.rectangle([ex - s, ey - s, ex + s, ey + s], fill=(*color, int(alpha * 0.85)))
+    elif kind == "bubbles":
+        for i in range(4):
+            ang = math.radians(i * 90 + 30)
+            rr = 6 + elapsed * 20
+            ex, ey = fx + math.cos(ang) * rr * 0.6, fy - elapsed * 22 + math.sin(ang) * 6
+            pr = max(1, 3.5 * (1 - elapsed * 0.6))
+            d.ellipse([ex - pr, ey - pr, ex + pr, ey + pr], outline=(*color, int(alpha * 0.8)), width=1)
+    elif kind == "starburst":
+        for i in range(6):
+            ang = math.radians(i * 60 + 15)
+            r1, r2 = 6, 6 + elapsed * 26
+            x1, y1 = fx + math.cos(ang) * r1, fy + math.sin(ang) * r1
+            x2, y2 = fx + math.cos(ang) * r2, fy + math.sin(ang) * r2
+            d.line([(x1, y1), (x2, y2)], fill=(*color, int(alpha * 0.7)), width=1)
+    else:  # "dust_ring"
+        rr = 12 + elapsed * 30
+        d.ellipse([fx - rr, fy - rr * 0.5, fx + rr, fy + rr * 0.5], outline=(*color, int(alpha * 0.6)), width=3)
 
 
 def _make_ambient_particles(seed, count, w, h):
@@ -1165,6 +1227,8 @@ def build_battle_clip(battle):
                     x2, y2 = fx + math.cos(ang) * r2, fy + math.sin(ang) * r2
                     d.line([(x1, y1), (x2, y2)], fill=(255, 240, 180, flash_alpha), width=4)
                 d.ellipse([fx - 16, fy - 16, fx + 16, fy + 16], fill=(255, 250, 215, flash_alpha))
+
+            _draw_arena_impact_fx(d, theme.get("impact_fx", "dust_ring"), fx, fy, elapsed, flash_alpha, theme["particle"])
 
         if not in_intro:
             for koi, fi, kx, ky in battle["ko_events"]:
