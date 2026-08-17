@@ -62,6 +62,34 @@ def _metal_fuller(d, p1, p2, width, color):
     d.line([p1, p2], fill=(255, 255, 255, 90), width=max(1, int(width)))
 
 
+def _gradient_fill(size, shape_fn, color, angle_deg=115, light=1.5, dark=0.5):
+    """Renders whatever shape_fn(mask_draw) fills solid onto a mask, then
+    composites a directional light->dark gradient through that mask —
+    a real rendered-metal look for a weapon's main shape instead of one
+    flat color, on top of which _polish_icon's global sheen still applies.
+    Returns an RGBA image the same size as the icon canvas; alpha_composite
+    it in place of the old flat `fill=c` draw call."""
+    mask_img = Image.new("L", (size, size), 0)
+    shape_fn(ImageDraw.Draw(mask_img))
+
+    rad = math.radians(angle_deg)
+    ux, uy = math.cos(rad), math.sin(rad)
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
+    proj = xx * ux + yy * uy
+    pmin, pmax = proj.min(), proj.max()
+    t = (proj - pmin) / max(1e-6, (pmax - pmin))
+
+    light_c = tuple(min(255, int(c * light)) for c in color)
+    dark_c = tuple(max(0, int(c * dark)) for c in color)
+    grad = np.empty((size, size, 3), dtype=np.uint8)
+    for ch in range(3):
+        grad[:, :, ch] = (dark_c[ch] + (light_c[ch] - dark_c[ch]) * (1 - t)).astype(np.uint8)
+
+    grad_img = Image.fromarray(grad, mode="RGB").convert("RGBA")
+    grad_img.putalpha(mask_img)
+    return grad_img
+
+
 def _draw_icon_shape(kind, color, size=170):
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -70,29 +98,35 @@ def _draw_icon_shape(kind, color, size=170):
 
     if kind == "sword":
         bw = size * 0.09
-        d.polygon([(cx, size * 0.05), (cx + bw, size * 0.55), (cx - bw, size * 0.55)], fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(
+            [(cx, size * 0.05), (cx + bw, size * 0.55), (cx - bw, size * 0.55)], fill=255), color))
         _metal_fuller(d, (cx, size * 0.09), (cx, size * 0.52), max(1, int(bw * 0.25)), color)
         d.rectangle([cx - size * 0.17, size * 0.55, cx + size * 0.17, size * 0.62], fill=(*STEEL, 255))
         d.rectangle([cx - bw * 0.5, size * 0.62, cx + bw * 0.5, size * 0.85], fill=(*WOOD, 255))
         d.ellipse([cx - bw * 0.8, size * 0.83, cx + bw * 0.8, size * 0.93], fill=(*WOOD, 255))
     elif kind == "axe":
         _wood_line(d, (cx - size * 0.16, size * 0.90), (cx + size * 0.14, size * 0.12), int(size * 0.055))
-        d.pieslice([cx - size * 0.06, size * 0.02, cx + size * 0.44, size * 0.42], start=195, end=345, fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.pieslice(
+            [cx - size * 0.06, size * 0.02, cx + size * 0.44, size * 0.42], start=195, end=345, fill=255), color), (0, 0))
     elif kind == "hammer":
         _wood_line(d, (cx, size * 0.90), (cx, size * 0.36), int(size * 0.07))
-        d.rounded_rectangle([cx - size * 0.24, size * 0.10, cx + size * 0.24, size * 0.40], radius=int(size * 0.05), fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.rounded_rectangle(
+            [cx - size * 0.24, size * 0.10, cx + size * 0.24, size * 0.40], radius=int(size * 0.05), fill=255), color), (0, 0))
     elif kind == "spear":
         _wood_line(d, (cx, size * 0.95), (cx, size * 0.16), int(size * 0.045))
-        d.polygon([(cx, size * 0.02), (cx + size * 0.075, size * 0.24), (cx - size * 0.075, size * 0.24)], fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(
+            [(cx, size * 0.02), (cx + size * 0.075, size * 0.24), (cx - size * 0.075, size * 0.24)], fill=255), color), (0, 0))
     elif kind == "dagger":
         bw = size * 0.065
-        d.polygon([(cx, size * 0.18), (cx + bw, size * 0.55), (cx - bw, size * 0.55)], fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(
+            [(cx, size * 0.18), (cx + bw, size * 0.55), (cx - bw, size * 0.55)], fill=255), color), (0, 0))
         _metal_fuller(d, (cx, size * 0.21), (cx, size * 0.52), max(1, int(bw * 0.25)), color)
         d.rectangle([cx - size * 0.12, size * 0.55, cx + size * 0.12, size * 0.60], fill=(*STEEL, 255))
         d.rectangle([cx - bw * 0.6, size * 0.60, cx + bw * 0.6, size * 0.75], fill=(*WOOD, 255))
     elif kind == "mace":
         _wood_line(d, (cx, size * 0.92), (cx, size * 0.46), int(size * 0.06))
-        d.ellipse([cx - size * 0.17, size * 0.13, cx + size * 0.17, size * 0.47], fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.ellipse(
+            [cx - size * 0.17, size * 0.13, cx + size * 0.17, size * 0.47], fill=255), color), (0, 0))
         for ang in range(0, 360, 45):
             rad = math.radians(ang)
             x2 = cx + math.cos(rad) * size * 0.25
@@ -100,13 +134,16 @@ def _draw_icon_shape(kind, color, size=170):
             d.line([(cx, size * 0.30), (x2, y2)], fill=c, width=max(2, int(size * 0.025)))
     elif kind == "scythe":
         _wood_line(d, (cx, size * 0.96), (cx, size * 0.30), int(size * 0.04))
-        d.arc([cx - size * 0.36, size * 0.02, cx + size * 0.34, size * 0.52], start=200, end=340, fill=c, width=int(size * 0.07))
+        arc_w = int(size * 0.07)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.arc(
+            [cx - size * 0.36, size * 0.02, cx + size * 0.34, size * 0.52], start=200, end=340, fill=255, width=arc_w), color), (0, 0))
     elif kind == "katana":
         bw = size * 0.06
-        d.polygon([
+        katana_pts = [
             (cx + size * 0.06, size * 0.04), (cx + bw, size * 0.30), (cx + bw * 0.4, size * 0.58),
             (cx - bw * 0.4, size * 0.58), (cx - bw * 0.3, size * 0.30),
-        ], fill=c)
+        ]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(katana_pts, fill=255), color), (0, 0))
         _metal_fuller(d, (cx + size * 0.03, size * 0.08), (cx - bw * 0.35, size * 0.56), max(1, int(bw * 0.2)), color)
         d.rectangle([cx - size * 0.15, size * 0.58, cx + size * 0.15, size * 0.64], fill=(20, 20, 24, 255))
         d.rectangle([cx - bw * 0.5, size * 0.64, cx + bw * 0.5, size * 0.88], fill=(30, 30, 34, 255))
@@ -115,19 +152,22 @@ def _draw_icon_shape(kind, color, size=170):
             d.line([(cx - bw * 0.5, yy), (cx + bw * 0.5, yy + size * 0.035)], fill=(200, 200, 60, 255), width=2)
     elif kind == "warhammer":
         _wood_line(d, (cx, size * 0.94), (cx, size * 0.40), int(size * 0.09))
-        d.rounded_rectangle([cx - size * 0.30, size * 0.06, cx + size * 0.30, size * 0.44], radius=int(size * 0.06), fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.rounded_rectangle(
+            [cx - size * 0.30, size * 0.06, cx + size * 0.30, size * 0.44], radius=int(size * 0.06), fill=255), color), (0, 0))
         d.rounded_rectangle([cx - size * 0.30, size * 0.06, cx + size * 0.30, size * 0.44], radius=int(size * 0.06), outline=(40, 40, 44, 255), width=3)
     elif kind == "trident":
         _wood_line(d, (cx, size * 0.96), (cx, size * 0.22), int(size * 0.045))
         for off in (-0.16, 0, 0.16):
-            d.polygon([
+            prong_pts = [
                 (cx + size * off, size * 0.02), (cx + size * off + size * 0.045, size * 0.26),
                 (cx + size * off - size * 0.045, size * 0.26),
-            ], fill=c)
+            ]
+            img.alpha_composite(_gradient_fill(size, lambda md, p=prong_pts: md.polygon(p, fill=255), color), (0, 0))
         d.line([(cx - size * 0.16, size * 0.20), (cx + size * 0.16, size * 0.20)], fill=c, width=max(2, int(size * 0.02)))
     elif kind == "kunai":
         bw = size * 0.10
-        d.polygon([(cx, size * 0.10), (cx + bw, size * 0.46), (cx, size * 0.40), (cx - bw, size * 0.46)], fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(
+            [(cx, size * 0.10), (cx + bw, size * 0.46), (cx, size * 0.40), (cx - bw, size * 0.46)], fill=255), color), (0, 0))
         d.rectangle([cx - bw * 0.35, size * 0.46, cx + bw * 0.35, size * 0.78], fill=(60, 60, 66, 255))
         d.ellipse([cx - size * 0.11, size * 0.78, cx + size * 0.11, size * 0.94], outline=(60, 60, 66, 255), width=max(2, int(size * 0.025)))
     elif kind == "flail":
@@ -135,15 +175,18 @@ def _draw_icon_shape(kind, color, size=170):
         for i in range(3):
             yy = size * (0.58 - i * 0.09)
             d.ellipse([cx - size * 0.045, yy - size * 0.03, cx + size * 0.045, yy + size * 0.03], outline=(120, 120, 130, 255), width=3)
-        d.ellipse([cx - size * 0.16, size * 0.10, cx + size * 0.16, size * 0.42], fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.ellipse(
+            [cx - size * 0.16, size * 0.10, cx + size * 0.16, size * 0.42], fill=255), color), (0, 0))
         for ang in range(0, 360, 40):
             rad = math.radians(ang)
             x2 = cx + math.cos(rad) * size * 0.23
             y2 = size * 0.26 + math.sin(rad) * size * 0.23
             d.line([(cx, size * 0.26), (x2, y2)], fill=(200, 200, 205, 255), width=max(2, int(size * 0.02)))
     elif kind == "nunchaku":
-        d.rounded_rectangle([cx - size * 0.09, size * 0.04, cx + size * 0.09, size * 0.40], radius=int(size * 0.03), fill=c)
-        d.rounded_rectangle([cx - size * 0.09, size * 0.58, cx + size * 0.09, size * 0.94], radius=int(size * 0.03), fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.rounded_rectangle(
+            [cx - size * 0.09, size * 0.04, cx + size * 0.09, size * 0.40], radius=int(size * 0.03), fill=255), color, angle_deg=90), (0, 0))
+        img.alpha_composite(_gradient_fill(size, lambda md: md.rounded_rectangle(
+            [cx - size * 0.09, size * 0.58, cx + size * 0.09, size * 0.94], radius=int(size * 0.03), fill=255), color, angle_deg=90), (0, 0))
         mid1, mid2 = (cx, size * 0.40), (cx, size * 0.58)
         d.line([mid1, ((mid1[0] + mid2[0]) / 2 + size * 0.07, (mid1[1] + mid2[1]) / 2), mid2], fill=(90, 90, 96, 255), width=max(2, int(size * 0.02)))
     elif kind == "whip":
@@ -153,18 +196,21 @@ def _draw_icon_shape(kind, color, size=170):
             x = cx + math.sin(t * 3.6) * size * (0.05 + t * 0.16)
             y = size * (0.06 + t * 0.78)
             pts.append((x, y))
-        d.line(pts, fill=c, width=max(2, int(size * 0.028)), joint="curve")
+        whip_w = max(2, int(size * 0.028))
+        img.alpha_composite(_gradient_fill(size, lambda md: md.line(pts, fill=255, width=whip_w, joint="curve"), color, angle_deg=90), (0, 0))
         d.rounded_rectangle([cx - size * 0.06, size * 0.84, cx + size * 0.06, size * 0.96], radius=4, fill=(*WOOD, 255))
     elif kind == "claws":
         for off in (-0.14, 0.0, 0.14):
-            d.polygon([
+            claw_pts = [
                 (cx + size * off, size * 0.06), (cx + size * off + size * 0.045, size * 0.52),
                 (cx + size * off - size * 0.045, size * 0.52),
-            ], fill=c)
+            ]
+            img.alpha_composite(_gradient_fill(size, lambda md, p=claw_pts: md.polygon(p, fill=255), color), (0, 0))
         d.rounded_rectangle([cx - size * 0.20, size * 0.52, cx + size * 0.20, size * 0.72], radius=int(size * 0.04), fill=(70, 70, 76, 255))
     elif kind == "chainsaw":
         d.rounded_rectangle([cx - size * 0.16, size * 0.30, cx + size * 0.16, size * 0.78], radius=int(size * 0.05), fill=(70, 70, 76, 255))
-        d.rounded_rectangle([cx - size * 0.10, size * 0.05, cx + size * 0.10, size * 0.34], radius=int(size * 0.03), fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.rounded_rectangle(
+            [cx - size * 0.10, size * 0.05, cx + size * 0.10, size * 0.34], radius=int(size * 0.03), fill=255), color, angle_deg=90), (0, 0))
         for i in range(6):
             yy = size * (0.07 + i * 0.045)
             side = 1 if i % 2 == 0 else -1
@@ -178,7 +224,7 @@ def _draw_icon_shape(kind, color, size=170):
             ang = math.radians(i * 45)
             r = size * 0.40 if i % 2 == 0 else size * 0.14
             pts.append((cx + math.cos(ang) * r, size / 2 + math.sin(ang) * r))
-        d.polygon(pts, fill=c)
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(pts, fill=255), color), (0, 0))
         d.ellipse([cx - size * 0.06, size / 2 - size * 0.06, cx + size * 0.06, size / 2 + size * 0.06], fill=(40, 40, 44, 255))
     return img
 
