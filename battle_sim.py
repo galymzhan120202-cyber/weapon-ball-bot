@@ -42,6 +42,34 @@ WEAPON_POOL = [
     {"name": "Boomerang", "kind": "boomerang", "color": (190, 140, 75), "power": 0.82, "material": "wood"},
 ]
 
+# Physical collision-radius multiplier per weapon kind, independent of the
+# "power"/mass stat — a weapon that visually reads as long (spear, whip,
+# staff) gets a bigger effective hitbox and correspondingly earlier/wider
+# collisions, while a compact one (dagger, kunai, shuriken) gets a smaller
+# one, so a weapon's reach affects how a fight actually plays out, not just
+# how it looks standing still.
+WEAPON_REACH = {
+    "sword": 1.00, "katana": 1.05, "axe": 0.95, "hammer": 0.85, "warhammer": 1.05,
+    "spear": 1.25, "trident": 1.22, "dagger": 0.72, "kunai": 0.70, "mace": 0.85,
+    "flail": 0.95, "nunchaku": 0.90, "whip": 1.30, "scythe": 1.15, "claws": 0.75,
+    "chainsaw": 1.00, "staff": 1.20, "shuriken": 0.65, "rapier": 1.15,
+    "halberd": 1.25, "cleaver": 0.85, "boomerang": 0.90,
+}
+
+# Per-material collision feel: metal stays crisp/springy (near-elastic,
+# slick), blunt weapons absorb more energy and grip harder (a heavy dull
+# thud that transfers more spin than bounce-back), wood sits in between,
+# and whip is the floppiest/least bouncy of all — the periodic "lunge"
+# impulse re-injects energy regardless, so a fight never actually stalls
+# even though lower-elasticity materials bleed energy faster between hits.
+_MATERIAL_PHYSICS = {
+    "metal": {"elasticity": 1.00, "friction": 0.20},
+    "mechanical": {"elasticity": 0.92, "friction": 0.34},
+    "blunt": {"elasticity": 0.78, "friction": 0.38},
+    "wood": {"elasticity": 0.90, "friction": 0.30},
+    "whip": {"elasticity": 0.70, "friction": 0.44},
+}
+
 WOOD = (110, 74, 40)
 STEEL = (150, 150, 160)
 
@@ -490,7 +518,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         n_fighters = rng.choices(options, weights=weights, k=1)[0]
 
     fighters = rng.sample(WEAPON_POOL, n_fighters)
-    radius = RADIUS_BY_N[n_fighters]
+    base_radius = RADIUS_BY_N[n_fighters]
     icon_size = ICON_SIZE_BY_N[n_fighters]
 
     top_arena = int(h * 0.24)
@@ -503,19 +531,19 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     space = pymunk.Space()
     space.gravity = (0, 0)
 
-    def spawn(x, y, angle_deg, speed, ctype, mass):
+    def spawn(x, y, angle_deg, speed, ctype, mass, radius, elasticity, friction):
         body = pymunk.Body(mass=mass, moment=pymunk.moment_for_circle(mass, 0, radius))
         body.position = (x, y)
         rad = math.radians(angle_deg)
         body.velocity = (math.cos(rad) * speed, math.sin(rad) * speed)
         body.angular_velocity = rng.uniform(-5.5, 5.5)
         shape = pymunk.Circle(body, radius)
-        shape.elasticity = 1.0
-        # A little friction (fighter-vs-fighter clashes only, walls stay at 0
-        # so bounces off the arena edge stay clean) lets impacts transfer
-        # spin, so a weapon's rotation visibly kicks or stalls on a hit
-        # instead of spinning at one constant rate for the whole fight.
-        shape.friction = 0.28
+        shape.elasticity = elasticity
+        # Friction (fighter-vs-fighter clashes only, walls stay at 0 so
+        # bounces off the arena edge stay clean) lets impacts transfer spin,
+        # so a weapon's rotation visibly kicks or stalls on a hit instead of
+        # spinning at one constant rate for the whole fight.
+        shape.friction = friction
         shape.collision_type = ctype
         space.add(body, shape)
         return body, shape
@@ -534,7 +562,12 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         x = center_x + math.cos(ang) * spawn_r
         y = center_y + math.sin(ang) * spawn_r
         aim = math.degrees(math.atan2(center_y - y, center_x - x)) + rng.uniform(-25, 25)
-        body, shape = spawn(x, y, aim, speed0, ctype=i + 1, mass=fighters[i]["power"])
+        fighter_radius = base_radius * WEAPON_REACH.get(fighters[i]["kind"], 1.0)
+        phys = _MATERIAL_PHYSICS.get(fighters[i]["material"], _MATERIAL_PHYSICS["metal"])
+        body, shape = spawn(
+            x, y, aim, speed0, ctype=i + 1, mass=fighters[i]["power"], radius=fighter_radius,
+            elasticity=phys["elasticity"], friction=phys["friction"],
+        )
         bodies.append(body)
         shapes.append(shape)
 
