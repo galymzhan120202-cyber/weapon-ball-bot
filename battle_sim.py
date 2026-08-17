@@ -10,6 +10,7 @@ its `seed`.
 import colorsys
 import hashlib
 import math
+import os
 import random
 
 import numpy as np
@@ -530,7 +531,14 @@ def make_obstacle_icon(radius_px, accent_color, kind="rock"):
 
 # --- Fonts ---------------------------------------------------------------
 
+_FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
+# Anton (SIL Open Font License, bundled in fonts/) is a bold, condensed
+# "impact" display face — it's what actually makes titles/HP labels/banners
+# read as a gaming channel instead of generic bold-sans UI text. The system
+# fonts stay as fallbacks in case the bundled file is ever missing.
 _FONT_CANDIDATES = [
+    os.path.join(_FONTS_DIR, "Anton-Regular.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "C:\\Windows\\Fonts\\arialbd.ttf",
     "C:\\Windows\\Fonts\\arial.ttf",
@@ -614,6 +622,16 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     # power ~0.8) flying — the collision itself feels like weight, not just
     # the HP number ticking down.
     bodies, shapes = [], []
+    # Flail/nunchaku/whip are chain/flexible weapons in concept — give each
+    # one a tiny second body with NO collision shape (so it can never affect
+    # damage/hit detection) tethered to the main body by a soft DampedSpring.
+    # It has nothing scripted about it: real inertia makes it lag behind
+    # during travel and swing/overshoot on a sudden velocity change (a hit),
+    # then settle into an orbit — genuine physics, purely a render-time
+    # flourish layered on top of the existing single-body gameplay model.
+    CHAIN_WEAPON_KINDS = {"flail", "nunchaku", "whip"}
+    chain_bodies = [None] * n_fighters
+    chain_springs = [None] * n_fighters
     for i in range(n_fighters):
         ang = math.radians(angle_offset + i * 360 / n_fighters)
         x = center_x + math.cos(ang) * spawn_r
@@ -627,6 +645,16 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         )
         bodies.append(body)
         shapes.append(shape)
+
+        if fighters[i]["kind"] in CHAIN_WEAPON_KINDS:
+            chain_len = fighter_radius * 0.55
+            head_body = pymunk.Body(mass=0.12, moment=1.0)
+            head_body.position = (x + chain_len, y)
+            space.add(head_body)
+            spring = pymunk.DampedSpring(body, head_body, (0, 0), (0, 0), rest_length=chain_len, stiffness=90, damping=4.0)
+            space.add(spring)
+            chain_bodies[i] = head_body
+            chain_springs[i] = spring
 
     pts = [(left_arena, top_arena), (right_arena, top_arena), (right_arena, bottom_arena), (left_arena, bottom_arena)]
     for i in range(4):
@@ -665,6 +693,13 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     ctype_to_idx = {i + 1: i for i in range(n_fighters)}
     hit_log = []  # (step_index, x, y, total_dmg)
     obstacle_hit_log = []  # (step_index, x, y) — a weapon bounced off a static obstacle
+    wall_hit_log = []  # (step_index, x, y) — a weapon bounced off the arena boundary
+    # Weapons clip the arena wall constantly (perfectly elastic bounces), far
+    # more often than they touch an obstacle — a per-fighter cooldown keeps
+    # the wall-bounce reaction to an occasional punchy beat instead of a
+    # flash on every single touch.
+    WALL_FLASH_COOLDOWN_STEPS = int(0.5 * PHYSICS_HZ)
+    last_wall_flash_step = [-WALL_FLASH_COOLDOWN_STEPS] * n_fighters
     step_counter = {"n": 0}
 
     def on_hit(arbiter, space, data):
@@ -678,7 +713,17 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 obstacle_hit_log.append((step_counter["n"], cx, cy))
             return True
         if ct1 not in ctype_to_idx or ct2 not in ctype_to_idx:
-            return True  # a wall hit, not a fighter-vs-fighter clash
+            # a wall hit, not a fighter-vs-fighter clash — no damage, but an
+            # occasional (cooldown-gated) reaction so bouncing off the arena
+            # boundary reads as hitting something solid, not silent/invisible.
+            other_ct = ct1 if ct1 in ctype_to_idx else ct2
+            fi = ctype_to_idx.get(other_ct)
+            if fi is not None and alive[fi] and step_counter["n"] - last_wall_flash_step[fi] >= WALL_FLASH_COOLDOWN_STEPS:
+                last_wall_flash_step[fi] = step_counter["n"]
+                cps = arbiter.contact_point_set.points
+                cx, cy = (cps[0].point_a.x, cps[0].point_a.y) if cps else (bodies[fi].position.x, bodies[fi].position.y)
+                wall_hit_log.append((step_counter["n"], cx, cy))
+            return True
         i1, i2 = ctype_to_idx[ct1], ctype_to_idx[ct2]
         if not alive[i1] or not alive[i2]:
             return True
@@ -721,6 +766,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     frames = []
     hit_frame_flags = {}  # frame_index -> (x, y, dmg)
     obstacle_hit_frames = {}  # frame_index -> (x, y)
+    wall_hit_frames = {}  # frame_index -> (x, y)
     ko_events = []  # list of (frame_index, fighter_idx, x, y) — a list, not a
     # dict keyed by frame, because two fighters can die in the very same
     # frame window (a mutual/simultaneous KO) and would otherwise clobber
@@ -751,10 +797,12 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 
         if step_counter["n"] % steps_per_frame == 0:
             pos = []
+            chain_pos = []
             for i in range(n_fighters):
                 b = bodies[i]
                 pos.append((b.position.x, b.position.y, math.degrees(b.angle)))
-            frames.append({"pos": pos, "hp": list(hp), "alive": list(alive)})
+                chain_pos.append((chain_bodies[i].position.x, chain_bodies[i].position.y) if chain_bodies[i] else None)
+            frames.append({"pos": pos, "hp": list(hp), "alive": list(alive), "chain_pos": chain_pos})
             frame_idx += 1
 
         if hit_log and hit_log[-1][0] == step_counter["n"]:
@@ -765,6 +813,10 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             _, ohx, ohy = obstacle_hit_log[-1]
             obstacle_hit_frames[frame_idx - 1] = (ohx, ohy)
 
+        if wall_hit_log and wall_hit_log[-1][0] == step_counter["n"]:
+            _, whx, why = wall_hit_log[-1]
+            wall_hit_frames[frame_idx - 1] = (whx, why)
+
         for i in range(n_fighters):
             if alive[i] and hp[i] <= 0:
                 alive[i] = False
@@ -773,6 +825,11 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                     space.remove(bodies[i], shapes[i])
                 except Exception:
                     pass
+                if chain_bodies[i] is not None:
+                    try:
+                        space.remove(chain_springs[i], chain_bodies[i])
+                    except Exception:
+                        pass
 
         if step_counter["n"] >= min_steps and sum(alive) <= 1:
             break
@@ -822,7 +879,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         replay_start = len(frames)
         for src_idx in range(r0, r1 + 1):
             src = frames[src_idx]
-            dup = {"pos": list(src["pos"]), "hp": list(src["hp"]), "alive": list(src["alive"])}
+            dup = {"pos": list(src["pos"]), "hp": list(src["hp"]), "alive": list(src["alive"]), "chain_pos": list(src.get("chain_pos", []))}
             for _ in range(2):  # each source frame plays twice => 2x slow-mo
                 new_idx = len(frames)
                 frames.append(dict(dup))
@@ -845,6 +902,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         "frames": frames,
         "hit_frame_flags": hit_frame_flags,
         "obstacle_hit_frames": obstacle_hit_frames,
+        "wall_hit_frames": wall_hit_frames,
         "ko_events": ko_events,
         "fighters": fighters,
         "n_fighters": n_fighters,
@@ -1064,9 +1122,18 @@ def _make_ambient_particles(seed, count, w, h):
 DANGER_HP_FRAC = 0.25
 
 
-def _hp_bar(draw, x0, y0, x1, y1, frac, color, danger_pulse=0.0):
+def _hp_bar(draw, x0, y0, x1, y1, frac, color, danger_pulse=0.0, chip_frac=None):
     draw.rounded_rectangle([x0, y0, x1, y1], radius=6, fill=(40, 40, 48, 230))
     frac = max(0.0, min(1.0, frac))
+    # "Chip damage" trail: a bright sliver showing HP recently lost, lagging
+    # behind the real (colored) bar and catching down to it over ~0.6s —
+    # standard fighting-game juice so a big hit reads as a visible drop, not
+    # just an instant bar-length change.
+    if chip_frac is not None:
+        chip_frac = max(0.0, min(1.0, chip_frac))
+        if chip_frac > frac:
+            cx1 = x0 + (x1 - x0) * chip_frac
+            draw.rounded_rectangle([x0, y0, cx1, y1], radius=6, fill=(235, 235, 240, 200))
     if frac > 0:
         bx1 = x0 + (x1 - x0) * frac
         draw.rounded_rectangle([x0, y0, bx1, y1], radius=6, fill=(*color, 255))
@@ -1282,9 +1349,16 @@ def build_battle_clip(battle):
         d.text((w / 2 - tw / 2, h * 0.045), title_text, font=title_font, fill=(255, 255, 255, 255))
 
         danger_pulse = 0.5 + 0.5 * math.sin(t * 9.0)
+        CHIP_DECAY_FRAMES = int(fps * 0.6)
         for i, f in enumerate(fighters):
             bx0 = bar_xs[i]
-            _hp_bar(d, bx0, bar_y, bx0 + bar_w, bar_y + bar_h, st["hp"][i] / START_HP, f["color"], danger_pulse)
+            real_frac = st["hp"][i] / START_HP
+            if in_intro:
+                chip_frac = real_frac
+            else:
+                lag_idx = max(0, idx - CHIP_DECAY_FRAMES)
+                chip_frac = frames[lag_idx]["hp"][i] / START_HP
+            _hp_bar(d, bx0, bar_y, bx0 + bar_w, bar_y + bar_h, real_frac, f["color"], danger_pulse, chip_frac)
             label = f"{f['name']}  {int(st['hp'][i])}"
             lw = d.textlength(label, font=hp_font)
             lx = min(max(bx0, bx0 + bar_w / 2 - lw / 2), bar_area_x1 - lw)
@@ -1329,6 +1403,18 @@ def build_battle_clip(battle):
                     a = max(0, int(200 * (1 - age / 6.0)))
                     if a > obs_flash_alpha:
                         obs_flash_alpha, obs_flash_xy = a, (ohx, ohy)
+
+        wall_flash_alpha, wall_flash_xy = 0, None
+        if not in_intro:
+            for hi in range(max(0, idx - 5), idx + 1):
+                if hi not in battle["wall_hit_frames"]:
+                    continue
+                wxh, wyh = battle["wall_hit_frames"][hi]
+                age = idx - hi
+                if age <= 4:
+                    a = max(0, int(130 * (1 - age / 4.0)))
+                    if a > wall_flash_alpha:
+                        wall_flash_alpha, wall_flash_xy = a, (wxh, wyh)
 
         first_blood_age = idx - first_hit_frame if (not in_intro and first_hit_frame is not None) else -1
         if 0 <= first_blood_age <= FIRST_BLOOD_FRAMES:
@@ -1413,6 +1499,15 @@ def build_battle_clip(battle):
             ring_r = 10 + obs_elapsed * 16
             d.ellipse([ofx - ring_r, ofy - ring_r, ofx + ring_r, ofy + ring_r], outline=(*theme["border"][:3], obs_flash_alpha), width=3)
 
+        if wall_flash_alpha > 0:
+            # a small, quiet spark where a weapon clipped the arena boundary
+            # — deliberately lighter than the obstacle reaction since it
+            # fires far more often (cooldown-gated above).
+            wfx, wfy = wall_flash_xy
+            wall_elapsed = 1.0 - wall_flash_alpha / 130.0
+            ring_r = 6 + wall_elapsed * 10
+            d.ellipse([wfx - ring_r, wfy - ring_r, wfx + ring_r, wfy + ring_r], outline=(*theme["border"][:3], wall_flash_alpha), width=2)
+
         if not in_intro:
             for koi, fi, kx, ky in battle["ko_events"]:
                 age = idx - koi
@@ -1440,6 +1535,15 @@ def build_battle_clip(battle):
                         pw, ph = int(rot.width * scale), int(rot.height * scale)
                         rot = rot.resize((pw, ph), Image.BICUBIC)
                 img.alpha_composite(rot, (int(x - rot.width / 2), int(y - rot.height / 2)))
+                if not in_intro:
+                    cpos = st.get("chain_pos")
+                    if cpos is not None and i < len(cpos) and cpos[i] is not None:
+                        hx2, hy2 = cpos[i]
+                        col = fighters[i]["color"]
+                        d.line([(x, y), (hx2, hy2)], fill=(*col, 150), width=max(1, int(icon_size * 0.03)))
+                        orb_r = icon_size * 0.06
+                        d.ellipse([hx2 - orb_r, hy2 - orb_r, hx2 + orb_r, hy2 + orb_r], fill=(*col, 220))
+                        d.ellipse([hx2 - orb_r * 0.5, hy2 - orb_r * 0.5, hx2 + orb_r * 0.5, hy2 + orb_r * 0.5], fill=(255, 255, 255, 200))
             else:
                 ko_frame = ko_frame_by_idx.get(i)
                 if ko_frame is not None:
@@ -1711,6 +1815,10 @@ def build_sfx_array(battle):
     for frame_idx in battle["obstacle_hit_frames"]:
         t = INTRO_SECONDS + frame_idx / fps
         _add(t, _obstacle_clack(), vol=0.5)
+
+    for frame_idx in battle["wall_hit_frames"]:
+        t = INTRO_SECONDS + frame_idx / fps
+        _add(t, _obstacle_clack(), vol=0.22)
 
     finale_t = INTRO_SECONDS + battle["finale_start"] / fps
     _add(finale_t, _victory_chime(), vol=0.9)
