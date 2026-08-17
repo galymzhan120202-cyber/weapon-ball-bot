@@ -570,6 +570,10 @@ KO_TEXT_TEMPLATES = [
     "{name} DEFEATED!",
 ]
 
+FIGHT_WORD_TEMPLATES = ["FIGHT!", "CLASH!", "BEGIN!", "GO!"]
+
+REPLAY_TEXT_TEMPLATES = ["REPLAY", "RUN IT BACK", "SLOW-MO", "ONE MORE TIME"]
+
 
 def _pick_variant(seed, salt, templates):
     rng = random.Random(hashlib.sha256((str(seed) + salt).encode()).hexdigest())
@@ -655,6 +659,8 @@ def build_battle_clip(battle):
     ambient_particles = _make_ambient_particles(battle.get("seed", 0), 16, w, h)
     win_text_template = _pick_variant(battle.get("seed", 0), "wintext", WIN_TEXT_TEMPLATES)
     ko_text_template = _pick_variant(battle.get("seed", 0), "kotext", KO_TEXT_TEMPLATES)
+    fight_word = _pick_variant(battle.get("seed", 0), "fightword", FIGHT_WORD_TEMPLATES)
+    replay_text = _pick_variant(battle.get("seed", 0), "replaytext", REPLAY_TEXT_TEMPLATES)
 
     obstacles = battle.get("obstacles") or []
     obstacle_radius = battle.get("obstacle_radius", 0)
@@ -829,7 +835,7 @@ def build_battle_clip(battle):
             step = min(3, int(t / (INTRO_SECONDS / 4)))
             local_t = (t % (INTRO_SECONDS / 4)) / (INTRO_SECONDS / 4)
             pop = 1.25 - 0.25 * min(1.0, local_t * 4)
-            word = ["3", "2", "1", "FIGHT!"][step]
+            word = ["3", "2", "1", fight_word][step]
             color = (255, 210, 60, 255) if step == 3 else (255, 255, 255, 255)
             base_size = count_font.size if hasattr(count_font, "size") else 90
             f2 = get_font(int(base_size * pop * (1.0 if step < 3 else 0.75)))
@@ -845,7 +851,7 @@ def build_battle_clip(battle):
             img = img.crop((int(cx0), int(cy0), int(cx0 + crop_w), int(cy0 + crop_h))).resize((w, h), Image.BICUBIC)
             d3 = ImageDraw.Draw(img, "RGBA")
             pulse = 0.65 + 0.35 * math.sin(t * 11)
-            rtxt = "REPLAY"
+            rtxt = replay_text
             rw = d3.textlength(rtxt, font=replay_font)
             d3.text((w / 2 - rw / 2, h * 0.185), rtxt, font=replay_font, fill=(255, 255, 255, int(255 * pulse)), stroke_width=3, stroke_fill=(200, 30, 30, 255))
         elif not in_intro and idx < finale_start:
