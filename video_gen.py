@@ -367,6 +367,8 @@ def upload_to_youtube(video_path, title, description, tags=None, thumbnail_path=
                 # бұл видео жүктелуін тоқтатпайды, тек warning ретінде логталады.
                 logger.warning(f"⚠️ Thumbnail орнату сәтсіз (video жүктелді): {str(e)[:200]}")
 
+        return video_id
+
     except Exception as e:
         logger.error(f"❌ Жүктеу қатесі: {e}")
         raise
@@ -503,11 +505,13 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
             logger.info(f"✓ Видео дайын: {final_output}")
 
             if not skip_upload:
-                retry_with_backoff(lambda: upload_to_youtube(final_output, video_title, video_description, video_tags, thumbnail_path))
+                video_id = retry_with_backoff(lambda: upload_to_youtube(final_output, video_title, video_description, video_tags, thumbnail_path))
+                video_url = f"https://youtube.com/shorts/{video_id}"
                 send_telegram(
                     f"✅ <b>Жаңа Weapon Ball видео жүктелді!</b>\n"
                     f"⚔️ <b>{' vs '.join(fighter_names)}</b>\n"
-                    f"🏆 Жеңімпаз: {winner_name}"
+                    f"🏆 Жеңімпаз: {winner_name}\n"
+                    f"🔗 {video_url}"
                 )
             else:
                 logger.info("✓ Видео сақталды (жүктеу өтіп кетті)")
