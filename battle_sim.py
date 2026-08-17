@@ -171,11 +171,11 @@ def _polish_icon(icon):
     result = Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
     # drop shadow: blurred + darkened silhouette, offset down-right
-    shadow_alpha = alpha.filter(ImageFilter.GaussianBlur(3)).point(lambda p: int(p * 0.55))
+    shadow_alpha = alpha.filter(ImageFilter.GaussianBlur(4)).point(lambda p: int(p * 0.6))
     shadow = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     shadow.putalpha(shadow_alpha)
     shifted_shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    shifted_shadow.paste(shadow, (3, 5), shadow)
+    shifted_shadow.paste(shadow, (4, 6), shadow)
     result.alpha_composite(shifted_shadow)
 
     # outline: dilated silhouette in a near-black tone, sits just behind the icon
@@ -201,6 +201,17 @@ def _polish_icon(icon):
     shade = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     shade.putalpha(Image.fromarray(shade_a, mode="L"))
     result.alpha_composite(shade)
+
+    # tight glossy specular streak — narrower and brighter than the broad
+    # sheen above, so metal/wood alike pick up a "rendered" highlight
+    # instead of reading as flat cartoon fill.
+    diag = (xx + yy) / (w + h)
+    band = np.clip(1.0 - np.abs(diag - 0.26) * 6.0, 0.0, 1.0) ** 2
+    highlight_a = (band * 170 * alpha_np).astype(np.uint8)
+    highlight = Image.new("RGBA", (w, h), (255, 255, 255, 0))
+    highlight.putalpha(Image.fromarray(highlight_a, mode="L"))
+    highlight = highlight.filter(ImageFilter.GaussianBlur(1.2))
+    result.alpha_composite(highlight)
 
     return result
 
@@ -606,6 +617,17 @@ def _pick_variant(seed, salt, templates):
     return rng.choice(templates)
 
 
+# Which impact-visual style a clash gets, chosen from the two materials
+# involved (lower priority number "wins" — metal/mechanical read as the most
+# visually punchy, so they dominate a mixed-material hit).
+_IMPACT_PRIORITY = {"metal": 0, "mechanical": 0, "blunt": 1, "wood": 2, "whip": 3}
+
+
+def _impact_style(mat_a, mat_b):
+    chosen = mat_a if _IMPACT_PRIORITY.get(mat_a, 0) <= _IMPACT_PRIORITY.get(mat_b, 0) else mat_b
+    return "metal" if chosen == "mechanical" else chosen
+
+
 def _make_ambient_particles(seed, count, w, h):
     rng = random.Random(hashlib.sha256((str(seed) + "ambient").encode()).hexdigest())
     particles = []
@@ -814,19 +836,20 @@ def build_battle_clip(battle):
             lx = min(max(bx0, bx0 + bar_w / 2 - lw / 2), bar_area_x1 - lw)
             d.text((lx, bar_y + bar_h + h * 0.008), label, font=hp_font, fill=(*f["color"], 255))
 
-        flash_alpha, flash_xy = 0, None
+        flash_alpha, flash_xy, flash_style = 0, None, "metal"
         dmg_popup = None
         shake_dx = shake_dy = 0.0
         if not in_intro:
             for hi in range(max(0, idx - 10), idx + 1):
                 if hi not in battle["hit_frame_flags"]:
                     continue
-                hx, hy, dmg, _, _ = battle["hit_frame_flags"][hi]
+                hx, hy, dmg, hi1, hi2 = battle["hit_frame_flags"][hi]
                 age = idx - hi
                 if age <= 4:
                     a = max(0, int(230 * (1 - age / 4.0)))
                     if a > flash_alpha:
                         flash_alpha, flash_xy = a, (hx, hy)
+                        flash_style = _impact_style(fighters[hi1]["material"], fighters[hi2]["material"])
                 if age <= 10:
                     pa = max(0, int(255 - age * 26))
                     if dmg_popup is None or age < dmg_popup[2]:
@@ -865,13 +888,47 @@ def build_battle_clip(battle):
 
         if flash_alpha > 0:
             fx, fy = flash_xy
-            for i in range(8):
-                ang = math.radians(i * 45 + (int(fx + fy) % 30))
-                r1, r2 = 12, 12 + flash_alpha * 0.28
-                x1, y1 = fx + math.cos(ang) * r1, fy + math.sin(ang) * r1
-                x2, y2 = fx + math.cos(ang) * r2, fy + math.sin(ang) * r2
-                d.line([(x1, y1), (x2, y2)], fill=(255, 240, 180, flash_alpha), width=4)
-            d.ellipse([fx - 16, fy - 16, fx + 16, fy + 16], fill=(255, 250, 215, flash_alpha))
+            elapsed = 1.0 - flash_alpha / 230.0  # 0 = just landed, 1 = fully faded
+            if flash_style == "blunt":
+                # thud: an expanding shockwave ring + soft dust puffs, no
+                # sharp sparks — reads as a heavy, blunt impact.
+                ring_r = 14 + elapsed * 46
+                d.ellipse([fx - ring_r, fy - ring_r, fx + ring_r, fy + ring_r], outline=(200, 160, 110, flash_alpha), width=4)
+                for i in range(5):
+                    dang = math.radians(i * 72 + (int(fx) % 30))
+                    dr = 8 + elapsed * 22
+                    dx, dy = fx + math.cos(dang) * dr, fy + math.sin(dang) * dr
+                    pr = 7 * (1 - elapsed * 0.5)
+                    d.ellipse([dx - pr, dy - pr, dx + pr, dy + pr], fill=(190, 150, 110, int(flash_alpha * 0.7)))
+            elif flash_style == "wood":
+                # splinters: a handful of short irregular light-brown chips
+                for i in range(5):
+                    ang = math.radians(i * 72 + (int(fx + fy) % 40) - 20)
+                    r1, r2 = 6, 20 + flash_alpha * 0.18
+                    x1, y1 = fx + math.cos(ang) * r1, fy + math.sin(ang) * r1
+                    x2, y2 = fx + math.cos(ang) * r2, fy + math.sin(ang) * r2
+                    d.line([(x1, y1), (x2, y2)], fill=(200, 160, 90, flash_alpha), width=3)
+                d.ellipse([fx - 8, fy - 8, fx + 8, fy + 8], fill=(210, 175, 110, int(flash_alpha * 0.8)))
+            elif flash_style == "whip":
+                # crack: a few short curved motion-streaks + a small spark
+                for i in range(3):
+                    base_ang = math.radians(i * 40 - 40 + (int(fx) % 20))
+                    pts = []
+                    for k in range(4):
+                        rr = 6 + k * 6
+                        aa = base_ang + k * 0.25
+                        pts.append((fx + math.cos(aa) * rr, fy + math.sin(aa) * rr))
+                    d.line(pts, fill=(230, 90, 90, flash_alpha), width=3, joint="curve")
+                d.ellipse([fx - 9, fy - 9, fx + 9, fy + 9], fill=(255, 220, 200, flash_alpha))
+            else:
+                # metal (default): bright radiating sparks + a hot core
+                for i in range(8):
+                    ang = math.radians(i * 45 + (int(fx + fy) % 30))
+                    r1, r2 = 12, 12 + flash_alpha * 0.28
+                    x1, y1 = fx + math.cos(ang) * r1, fy + math.sin(ang) * r1
+                    x2, y2 = fx + math.cos(ang) * r2, fy + math.sin(ang) * r2
+                    d.line([(x1, y1), (x2, y2)], fill=(255, 240, 180, flash_alpha), width=4)
+                d.ellipse([fx - 16, fy - 16, fx + 16, fy + 16], fill=(255, 250, 215, flash_alpha))
 
         if not in_intro:
             for koi, fi, kx, ky in battle["ko_events"]:
