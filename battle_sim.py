@@ -561,21 +561,31 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         oang2 = oang + 180 + rng.uniform(-30, 30)
         orad2 = spawn_r * rng.uniform(0.55, 0.8)
         obstacles.append((center_x + math.cos(math.radians(oang2)) * orad2, center_y + math.sin(math.radians(oang2)) * orad2))
+    OBSTACLE_COLLISION_TYPE = 99  # distinct from walls (0) and fighters (1..4)
     for (ox, oy) in obstacles:
         obs_shape = pymunk.Circle(space.static_body, obstacle_radius, offset=(ox, oy))
         obs_shape.elasticity = 1.0
         obs_shape.friction = 0.0
-        obs_shape.collision_type = 0
+        obs_shape.collision_type = OBSTACLE_COLLISION_TYPE
         space.add(obs_shape)
 
     hp = [START_HP] * n_fighters
     alive = [True] * n_fighters
     ctype_to_idx = {i + 1: i for i in range(n_fighters)}
     hit_log = []  # (step_index, x, y, total_dmg)
+    obstacle_hit_log = []  # (step_index, x, y) — a weapon bounced off a static obstacle
     step_counter = {"n": 0}
 
     def on_hit(arbiter, space, data):
         ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
+        if OBSTACLE_COLLISION_TYPE in (ct1, ct2):
+            other_ct = ct2 if ct1 == OBSTACLE_COLLISION_TYPE else ct1
+            fi = ctype_to_idx.get(other_ct)
+            if fi is not None and alive[fi]:
+                cps = arbiter.contact_point_set.points
+                cx, cy = (cps[0].point_a.x, cps[0].point_a.y) if cps else (bodies[fi].position.x, bodies[fi].position.y)
+                obstacle_hit_log.append((step_counter["n"], cx, cy))
+            return True
         if ct1 not in ctype_to_idx or ct2 not in ctype_to_idx:
             return True  # a wall hit, not a fighter-vs-fighter clash
         i1, i2 = ctype_to_idx[ct1], ctype_to_idx[ct2]
@@ -614,6 +624,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 
     frames = []
     hit_frame_flags = {}  # frame_index -> (x, y, dmg)
+    obstacle_hit_frames = {}  # frame_index -> (x, y)
     ko_events = []  # list of (frame_index, fighter_idx, x, y) — a list, not a
     # dict keyed by frame, because two fighters can die in the very same
     # frame window (a mutual/simultaneous KO) and would otherwise clobber
@@ -653,6 +664,10 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         if hit_log and hit_log[-1][0] == step_counter["n"]:
             _, hx, hy, dmg, hi1, hi2 = hit_log[-1]
             hit_frame_flags[frame_idx - 1] = (hx, hy, dmg, hi1, hi2)
+
+        if obstacle_hit_log and obstacle_hit_log[-1][0] == step_counter["n"]:
+            _, ohx, ohy = obstacle_hit_log[-1]
+            obstacle_hit_frames[frame_idx - 1] = (ohx, ohy)
 
         for i in range(n_fighters):
             if alive[i] and hp[i] <= 0:
@@ -733,6 +748,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     return {
         "frames": frames,
         "hit_frame_flags": hit_frame_flags,
+        "obstacle_hit_frames": obstacle_hit_frames,
         "ko_events": ko_events,
         "fighters": fighters,
         "n_fighters": n_fighters,
@@ -761,22 +777,22 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 # of the battle seed, independent of the physics RNG stream.
 
 ARENA_THEMES = [
-    {"name": "Midnight Arena", "top": (14, 12, 26), "bottom": (4, 4, 10), "grid": (255, 255, 255, 12), "border": (90, 90, 110, 255), "particle": (150, 150, 210), "obstacle_kind": "rock", "particle_kind": "up", "impact_fx": "dust_ring"},
-    {"name": "Neon City", "top": (42, 8, 52), "bottom": (10, 2, 16), "grid": (255, 70, 210, 20), "border": (210, 70, 230, 255), "particle": (255, 90, 220), "obstacle_kind": "tech_crate", "particle_kind": "up", "impact_fx": "spark_grid"},
-    {"name": "Lava Pit", "top": (48, 10, 4), "bottom": (14, 4, 2), "grid": (255, 130, 45, 18), "border": (235, 100, 35, 255), "particle": (255, 150, 60), "obstacle_kind": "lava_rock", "particle_kind": "up", "impact_fx": "embers"},
-    {"name": "Ice Cave", "top": (6, 26, 40), "bottom": (2, 8, 14), "grid": (150, 220, 255, 20), "border": (130, 205, 245, 255), "particle": (190, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down", "impact_fx": "frost"},
-    {"name": "Cyber Grid", "top": (4, 18, 9), "bottom": (2, 4, 4), "grid": (60, 255, 130, 24), "border": (60, 225, 115, 255), "particle": (90, 255, 150), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse", "impact_fx": "spark_grid"},
-    {"name": "Deep Space", "top": (6, 4, 28), "bottom": (2, 2, 9), "grid": (150, 150, 255, 12), "border": (120, 110, 225, 255), "particle": (205, 205, 255), "obstacle_kind": "rock", "particle_kind": "still_pulse", "impact_fx": "starburst"},
-    {"name": "Toxic Lab", "top": (10, 34, 6), "bottom": (3, 10, 2), "grid": (155, 255, 65, 18), "border": (145, 235, 55, 255), "particle": (175, 255, 85), "obstacle_kind": "tech_crate", "particle_kind": "up", "impact_fx": "spark_grid"},
-    {"name": "Sunset Coliseum", "top": (48, 16, 27), "bottom": (14, 4, 10), "grid": (255, 165, 125, 16), "border": (235, 125, 155, 255), "particle": (255, 175, 135), "obstacle_kind": "rock", "particle_kind": "sideways", "impact_fx": "dust_ring"},
-    {"name": "Volcanic Forge", "top": (30, 4, 4), "bottom": (8, 2, 2), "grid": (255, 90, 30, 20), "border": (255, 60, 20, 255), "particle": (255, 120, 40), "obstacle_kind": "lava_rock", "particle_kind": "up", "impact_fx": "embers"},
-    {"name": "Frozen Peak", "top": (10, 14, 34), "bottom": (3, 5, 12), "grid": (200, 220, 255, 18), "border": (170, 200, 250, 255), "particle": (220, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down", "impact_fx": "frost"},
-    {"name": "Golden Temple", "top": (40, 28, 4), "bottom": (12, 8, 1), "grid": (255, 210, 90, 20), "border": (240, 190, 70, 255), "particle": (255, 220, 130), "obstacle_kind": "gold_crystal", "particle_kind": "up", "impact_fx": "starburst"},
-    {"name": "Storm Clouds", "top": (18, 20, 28), "bottom": (5, 6, 9), "grid": (170, 190, 220, 18), "border": (150, 175, 210, 255), "particle": (200, 215, 255), "obstacle_kind": "rock", "particle_kind": "rain", "impact_fx": "dust_ring"},
-    {"name": "Blood Moon", "top": (34, 3, 6), "bottom": (9, 1, 2), "grid": (220, 40, 50, 18), "border": (200, 30, 45, 255), "particle": (255, 70, 80), "obstacle_kind": "bone", "particle_kind": "up", "impact_fx": "embers"},
-    {"name": "Coral Reef", "top": (4, 30, 32), "bottom": (2, 8, 10), "grid": (100, 230, 210, 18), "border": (90, 220, 200, 255), "particle": (255, 130, 170), "obstacle_kind": "coral", "particle_kind": "bubble", "impact_fx": "bubbles"},
-    {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130), "obstacle_kind": "sand_rock", "particle_kind": "sideways", "impact_fx": "dust_ring"},
-    {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse", "impact_fx": "spark_grid"},
+    {"name": "Midnight Arena", "top": (14, 12, 26), "bottom": (4, 4, 10), "grid": (255, 255, 255, 12), "border": (90, 90, 110, 255), "particle": (150, 150, 210), "obstacle_kind": "rock", "particle_kind": "up", "impact_fx": "dust_ring", "edge_kind": "none"},
+    {"name": "Neon City", "top": (42, 8, 52), "bottom": (10, 2, 16), "grid": (255, 70, 210, 20), "border": (210, 70, 230, 255), "particle": (255, 90, 220), "obstacle_kind": "tech_crate", "particle_kind": "up", "impact_fx": "spark_grid", "edge_kind": "circuit"},
+    {"name": "Lava Pit", "top": (48, 10, 4), "bottom": (14, 4, 2), "grid": (255, 130, 45, 18), "border": (235, 100, 35, 255), "particle": (255, 150, 60), "obstacle_kind": "lava_rock", "particle_kind": "up", "impact_fx": "embers", "edge_kind": "ember_glow"},
+    {"name": "Ice Cave", "top": (6, 26, 40), "bottom": (2, 8, 14), "grid": (150, 220, 255, 20), "border": (130, 205, 245, 255), "particle": (190, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down", "impact_fx": "frost", "edge_kind": "icicles"},
+    {"name": "Cyber Grid", "top": (4, 18, 9), "bottom": (2, 4, 4), "grid": (60, 255, 130, 24), "border": (60, 225, 115, 255), "particle": (90, 255, 150), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse", "impact_fx": "spark_grid", "edge_kind": "circuit"},
+    {"name": "Deep Space", "top": (6, 4, 28), "bottom": (2, 2, 9), "grid": (150, 150, 255, 12), "border": (120, 110, 225, 255), "particle": (205, 205, 255), "obstacle_kind": "rock", "particle_kind": "still_pulse", "impact_fx": "starburst", "edge_kind": "none"},
+    {"name": "Toxic Lab", "top": (10, 34, 6), "bottom": (3, 10, 2), "grid": (155, 255, 65, 18), "border": (145, 235, 55, 255), "particle": (175, 255, 85), "obstacle_kind": "tech_crate", "particle_kind": "up", "impact_fx": "spark_grid", "edge_kind": "circuit"},
+    {"name": "Sunset Coliseum", "top": (48, 16, 27), "bottom": (14, 4, 10), "grid": (255, 165, 125, 16), "border": (235, 125, 155, 255), "particle": (255, 175, 135), "obstacle_kind": "rock", "particle_kind": "sideways", "impact_fx": "dust_ring", "edge_kind": "horizon_silhouette"},
+    {"name": "Volcanic Forge", "top": (30, 4, 4), "bottom": (8, 2, 2), "grid": (255, 90, 30, 20), "border": (255, 60, 20, 255), "particle": (255, 120, 40), "obstacle_kind": "lava_rock", "particle_kind": "up", "impact_fx": "embers", "edge_kind": "ember_glow"},
+    {"name": "Frozen Peak", "top": (10, 14, 34), "bottom": (3, 5, 12), "grid": (200, 220, 255, 18), "border": (170, 200, 250, 255), "particle": (220, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down", "impact_fx": "frost", "edge_kind": "icicles"},
+    {"name": "Golden Temple", "top": (40, 28, 4), "bottom": (12, 8, 1), "grid": (255, 210, 90, 20), "border": (240, 190, 70, 255), "particle": (255, 220, 130), "obstacle_kind": "gold_crystal", "particle_kind": "up", "impact_fx": "starburst", "edge_kind": "horizon_silhouette"},
+    {"name": "Storm Clouds", "top": (18, 20, 28), "bottom": (5, 6, 9), "grid": (170, 190, 220, 18), "border": (150, 175, 210, 255), "particle": (200, 215, 255), "obstacle_kind": "rock", "particle_kind": "rain", "impact_fx": "dust_ring", "edge_kind": "lightning"},
+    {"name": "Blood Moon", "top": (34, 3, 6), "bottom": (9, 1, 2), "grid": (220, 40, 50, 18), "border": (200, 30, 45, 255), "particle": (255, 70, 80), "obstacle_kind": "bone", "particle_kind": "up", "impact_fx": "embers", "edge_kind": "ember_glow"},
+    {"name": "Coral Reef", "top": (4, 30, 32), "bottom": (2, 8, 10), "grid": (100, 230, 210, 18), "border": (90, 220, 200, 255), "particle": (255, 130, 170), "obstacle_kind": "coral", "particle_kind": "bubble", "impact_fx": "bubbles", "edge_kind": "coral_fringe"},
+    {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130), "obstacle_kind": "sand_rock", "particle_kind": "sideways", "impact_fx": "dust_ring", "edge_kind": "horizon_silhouette"},
+    {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse", "impact_fx": "spark_grid", "edge_kind": "circuit"},
 ]
 
 
@@ -885,6 +901,53 @@ def _draw_arena_impact_fx(d, kind, fx, fy, elapsed, alpha, color):
     else:  # "dust_ring"
         rr = 12 + elapsed * 30
         d.ellipse([fx - rr, fy - rr * 0.5, fx + rr, fy + rr * 0.5], outline=(*color, int(alpha * 0.6)), width=3)
+
+
+def _draw_arena_edge_decor(d, kind, left, top, right, bottom, color, t):
+    """A light per-theme decoration drawn along the arena border every
+    frame, so the box itself carries some of the arena's identity, not
+    just the background gradient and grid tint."""
+    if kind == "icicles":
+        n = 9
+        for i in range(n):
+            x = left + (right - left) * (i + 0.5) / n
+            ln = 10 + 14 * ((i * 37) % 5) / 4.0
+            d.polygon([(x - 5, top), (x + 5, top), (x, top + ln)], fill=(*color, 140))
+    elif kind == "ember_glow":
+        pulse = 0.5 + 0.5 * math.sin(t * 2.2)
+        glow_h = 10 + pulse * 8
+        d.rectangle([left, bottom - glow_h, right, bottom], fill=(*color, int(50 + 40 * pulse)))
+    elif kind == "circuit":
+        seg = 22
+        for (cx, cy, sx, sy) in [(left, top, 1, 1), (right, top, -1, 1), (left, bottom, 1, -1), (right, bottom, -1, -1)]:
+            d.line([(cx, cy), (cx + sx * seg, cy)], fill=(*color, 190), width=2)
+            d.line([(cx, cy), (cx, cy + sy * seg)], fill=(*color, 190), width=2)
+            d.ellipse([cx + sx * seg - 3, cy - 3, cx + sx * seg + 3, cy + 3], fill=(*color, 220))
+            d.ellipse([cx - 3, cy + sy * seg - 3, cx + 3, cy + sy * seg + 3], fill=(*color, 220))
+    elif kind == "lightning":
+        if int(t * 6) % 7 == 0:
+            frame_rng = random.Random(int(t * 6))
+            x0 = left + (right - left) * 0.3
+            pts = [(x0, top)]
+            xx, yy = x0, top
+            for _ in range(4):
+                xx += frame_rng.uniform(-30, 30)
+                yy += 25
+                pts.append((xx, yy))
+            d.line(pts, fill=(*color, 220), width=2)
+    elif kind == "coral_fringe":
+        n = 6
+        for i in range(n):
+            x = left + (right - left) * (i + 0.5) / n
+            hh = 14 + (i * 53) % 10
+            d.line([(x, bottom), (x, bottom - hh)], fill=(*color, 160), width=3)
+    elif kind == "horizon_silhouette":
+        n = 5
+        for i in range(n):
+            x = left + (right - left) * (i + 0.5) / n
+            hh = 8 + (i * 41) % 12
+            ww = (right - left) / n * 0.5
+            d.polygon([(x - ww / 2, bottom), (x + ww / 2, bottom), (x, bottom - hh)], fill=(*color, 90))
 
 
 def _make_ambient_particles(seed, count, w, h):
@@ -1113,6 +1176,8 @@ def build_battle_clip(battle):
         for gy in range(top, bottom, int(w * 0.09)):
             d.line([(left, gy), (right, gy)], fill=theme["grid"], width=1)
 
+        _draw_arena_edge_decor(d, theme.get("edge_kind", "none"), left, top, right, bottom, theme["particle"], t)
+
         if obstacle_icon is not None:
             for (ox, oy) in obstacles:
                 img.alpha_composite(obstacle_icon, (int(ox - obstacle_icon.width / 2), int(oy - obstacle_icon.height / 2)))
@@ -1156,6 +1221,18 @@ def build_battle_clip(battle):
                     for fi in (hi1, hi2):
                         if fi not in punch_age or age < punch_age[fi]:
                             punch_age[fi] = age
+
+        obs_flash_alpha, obs_flash_xy = 0, None
+        if not in_intro:
+            for hi in range(max(0, idx - 8), idx + 1):
+                if hi not in battle["obstacle_hit_frames"]:
+                    continue
+                ohx, ohy = battle["obstacle_hit_frames"][hi]
+                age = idx - hi
+                if age <= 6:
+                    a = max(0, int(200 * (1 - age / 6.0)))
+                    if a > obs_flash_alpha:
+                        obs_flash_alpha, obs_flash_xy = a, (ohx, ohy)
 
         first_blood_age = idx - first_hit_frame if (not in_intro and first_hit_frame is not None) else -1
         if 0 <= first_blood_age <= FIRST_BLOOD_FRAMES:
@@ -1229,6 +1306,16 @@ def build_battle_clip(battle):
                 d.ellipse([fx - 16, fy - 16, fx + 16, fy + 16], fill=(255, 250, 215, flash_alpha))
 
             _draw_arena_impact_fx(d, theme.get("impact_fx", "dust_ring"), fx, fy, elapsed, flash_alpha, theme["particle"])
+
+        if obs_flash_alpha > 0:
+            # a weapon bounced off the static obstacle — give it its own
+            # small themed reaction so the obstacle reads as a real object
+            # being struck, not just an inert prop.
+            ofx, ofy = obs_flash_xy
+            obs_elapsed = 1.0 - obs_flash_alpha / 200.0
+            _draw_arena_impact_fx(d, theme.get("impact_fx", "dust_ring"), ofx, ofy, obs_elapsed, obs_flash_alpha, theme["border"][:3])
+            ring_r = 10 + obs_elapsed * 16
+            d.ellipse([ofx - ring_r, ofy - ring_r, ofx + ring_r, ofy + ring_r], outline=(*theme["border"][:3], obs_flash_alpha), width=3)
 
         if not in_intro:
             for koi, fi, kx, ky in battle["ko_events"]:
@@ -1437,6 +1524,20 @@ MATERIAL_SFX = {
 }
 
 
+def _obstacle_clack():
+    """A short, higher-pitched knock for a weapon bouncing off a static
+    arena obstacle — deliberately quieter/shorter than a fighter-vs-fighter
+    hit so it reads as scenery feedback, not a real clash."""
+    dur = 0.12
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.exp(-t * 40)
+    tone = np.sin(2 * np.pi * 220 * t) * np.exp(-t * 60)
+    noise = np.random.default_rng(int(dur * 10000)).uniform(-1, 1, n) * np.exp(-t * 50) * 0.35
+    sfx = (tone * 0.6 + noise) * env
+    return sfx.astype(np.float32)
+
+
 def _hit_sound(material_a, material_b, intensity):
     a = MATERIAL_SFX.get(material_a, _clang_metal)(intensity)
     b = MATERIAL_SFX.get(material_b, _clang_metal)(intensity)
@@ -1510,6 +1611,10 @@ def build_sfx_array(battle):
         mat_a = fighters[i1]["material"]
         mat_b = fighters[i2]["material"]
         _add(t, _hit_sound(mat_a, mat_b, dmg / max(1.0, max_dmg)))
+
+    for frame_idx in battle["obstacle_hit_frames"]:
+        t = INTRO_SECONDS + frame_idx / fps
+        _add(t, _obstacle_clack(), vol=0.5)
 
     finale_t = INTRO_SECONDS + battle["finale_start"] / fps
     _add(finale_t, _victory_chime(), vol=0.9)
