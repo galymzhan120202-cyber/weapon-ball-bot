@@ -595,12 +595,21 @@ def _make_ambient_particles(seed, count, w, h):
 
 # --- Rendering -------------------------------------------------------------
 
-def _hp_bar(draw, x0, y0, x1, y1, frac, color):
+DANGER_HP_FRAC = 0.25
+
+
+def _hp_bar(draw, x0, y0, x1, y1, frac, color, danger_pulse=0.0):
     draw.rounded_rectangle([x0, y0, x1, y1], radius=6, fill=(40, 40, 48, 230))
     frac = max(0.0, min(1.0, frac))
     if frac > 0:
         bx1 = x0 + (x1 - x0) * frac
         draw.rounded_rectangle([x0, y0, bx1, y1], radius=6, fill=(*color, 255))
+    # Low-HP danger cue: a pulsing red outline once a fighter drops below
+    # DANGER_HP_FRAC, building tension ahead of a possible KO.
+    if 0 < frac < DANGER_HP_FRAC and danger_pulse > 0:
+        alpha = int(90 + 140 * danger_pulse)
+        pad = 3 + 2 * danger_pulse
+        draw.rounded_rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad], radius=8, outline=(255, 40, 40, alpha), width=3)
 
 
 def build_battle_clip(battle):
@@ -726,9 +735,10 @@ def build_battle_clip(battle):
         tw = d.textlength(title_text, font=title_font)
         d.text((w / 2 - tw / 2, h * 0.045), title_text, font=title_font, fill=(255, 255, 255, 255))
 
+        danger_pulse = 0.5 + 0.5 * math.sin(t * 9.0)
         for i, f in enumerate(fighters):
             bx0 = bar_xs[i]
-            _hp_bar(d, bx0, bar_y, bx0 + bar_w, bar_y + bar_h, st["hp"][i] / START_HP, f["color"])
+            _hp_bar(d, bx0, bar_y, bx0 + bar_w, bar_y + bar_h, st["hp"][i] / START_HP, f["color"], danger_pulse)
             label = f"{f['name']}  {int(st['hp'][i])}"
             lw = d.textlength(label, font=hp_font)
             lx = min(max(bx0, bx0 + bar_w / 2 - lw / 2), bar_area_x1 - lw)
@@ -827,6 +837,17 @@ def build_battle_clip(battle):
                 f = get_font(max(24, int(f.size * (w * 0.92) / tw2)))
                 tw2 = d.textlength(win_text, font=f)
             d.text((w / 2 - tw2 / 2, h * 0.5 - 40), win_text, font=f, fill=(255, 215, 60, int(255 * prog)))
+
+            # Subscribe CTA fades in a beat after the win text lands, so the
+            # banner gets a clean moment on its own first.
+            hold_idx = idx - finale_start
+            cta_prog = max(0.0, min(1.0, (hold_idx - fps * 0.65) / max(1, fps * 0.45)))
+            if cta_prog > 0:
+                cta_text = "SUBSCRIBE for more battles!"
+                cta_font = get_font(int(h * 0.030))
+                cw = d.textlength(cta_text, font=cta_font)
+                cta_y = h * 0.5 - 40 + (win_font.size if hasattr(win_font, "size") else 100) * scale + 26
+                d.text((w / 2 - cw / 2, cta_y), cta_text, font=cta_font, fill=(255, 255, 255, int(230 * cta_prog)), stroke_width=2, stroke_fill=(0, 0, 0, int(230 * cta_prog)))
 
         if in_intro:
             overlay = Image.new("RGBA", (w, h), (0, 0, 0, 90))
