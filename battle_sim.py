@@ -1650,7 +1650,16 @@ def generate_thumbnail(battle, output_path, w=1280, h=720):
     glow = glow.filter(ImageFilter.GaussianBlur(90))
     img = Image.alpha_composite(img, glow)
 
+    # A faint, blurred obstacle silhouette behind the weapon icons so the
+    # thumbnail hints at the same arena identity as the video, without
+    # competing with the icons/title for attention.
+    bg_obstacle = make_obstacle_icon(int(h * 0.22), theme["border"][:3], theme.get("obstacle_kind", "rock"))
+    bg_obstacle = bg_obstacle.filter(ImageFilter.GaussianBlur(3))
+    bg_obstacle.putalpha(bg_obstacle.split()[3].point(lambda p: int(p * 0.30)))
+    img.alpha_composite(bg_obstacle, (int(w / 2 - bg_obstacle.width / 2), int(h / 2 - bg_obstacle.height / 2)))
+
     d = ImageDraw.Draw(img, "RGBA")
+    _draw_arena_edge_decor(d, theme.get("edge_kind", "none"), 0, 0, w, h, theme["particle"], 0)
     vs_font = get_font(int(h * 0.24))
     title_font = get_font(int(h * 0.075))
 
