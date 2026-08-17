@@ -1,4 +1,5 @@
 name: Weapon Ball Auto Upload
+# re-trigger GitHub workflow registration
 
 on:
   schedule:
