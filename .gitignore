@@ -10,6 +10,7 @@ client_secrets.json
 # Уақытша файлдар
 TEMP_MPY_*.mp4
 final_shorts.mp4
+thumbnail.jpg
 music/_openverse_temp.mp3
 
 # Логтар

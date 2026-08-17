@@ -209,6 +209,27 @@ def make_icon(kind, color, size=170):
     return _polish_icon(_draw_icon_shape(kind, color, size))
 
 
+def make_obstacle_icon(radius_px, accent_color):
+    """A jagged rock/crystal obstacle, tinted with the arena theme's accent
+    color, built with the same outline/shadow/sheen pass as weapon icons so
+    it reads as part of the same visual system."""
+    size = int(radius_px * 2.5)
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    cx = cy = size / 2
+    shape_rng = random.Random(42)
+    n_pts = 9
+    pts = []
+    for i in range(n_pts):
+        ang = math.radians(i * 360 / n_pts)
+        rr = radius_px * shape_rng.uniform(0.78, 1.0)
+        pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr))
+    d.polygon(pts, fill=(66, 64, 62, 255))
+    for i in range(0, n_pts, 3):
+        d.line([pts[i], (cx, cy)], fill=(*accent_color, 130), width=2)
+    return _polish_icon(img)
+
+
 # --- Fonts ---------------------------------------------------------------
 
 _FONT_CANDIDATES = [
@@ -308,6 +329,29 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         seg.elasticity = 1.0
         seg.friction = 0.0
         space.add(seg)
+
+    # Occasional static obstacle(s) near the middle of the arena — bounced
+    # off exactly like the walls (collision_type 0, no damage), so a fight
+    # isn't always just an empty box. Offset off dead-center so a single
+    # obstacle in a 1v1 doesn't sit perfectly on the direct line between the
+    # two spawn points and choke the opening exchange.
+    obstacle_radius = min(right_arena - left_arena, bottom_arena - top_arena) * 0.055
+    obstacle_count = rng.choices([0, 1, 2], weights=[35, 45, 20], k=1)[0]
+    obstacles = []
+    if obstacle_count >= 1:
+        oang = rng.uniform(0, 360)
+        orad = spawn_r * rng.uniform(0.15, 0.35)
+        obstacles.append((center_x + math.cos(math.radians(oang)) * orad, center_y + math.sin(math.radians(oang)) * orad))
+    if obstacle_count >= 2:
+        oang2 = oang + 180 + rng.uniform(-30, 30)
+        orad2 = spawn_r * rng.uniform(0.55, 0.8)
+        obstacles.append((center_x + math.cos(math.radians(oang2)) * orad2, center_y + math.sin(math.radians(oang2)) * orad2))
+    for (ox, oy) in obstacles:
+        obs_shape = pymunk.Circle(space.static_body, obstacle_radius, offset=(ox, oy))
+        obs_shape.elasticity = 1.0
+        obs_shape.friction = 0.0
+        obs_shape.collision_type = 0
+        space.add(obs_shape)
 
     hp = [START_HP] * n_fighters
     alive = [True] * n_fighters
@@ -476,6 +520,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         "finale_start": len(frames) - finale_frames,
         "replay_range": replay_range,
         "replay_focus": replay_focus,
+        "obstacles": obstacles,
+        "obstacle_radius": obstacle_radius,
         "seed": seed,
     }
 
@@ -582,6 +628,10 @@ def build_battle_clip(battle):
     theme = pick_arena_theme(battle.get("seed", 0))
     ambient_particles = _make_ambient_particles(battle.get("seed", 0), 16, w, h)
 
+    obstacles = battle.get("obstacles") or []
+    obstacle_radius = battle.get("obstacle_radius", 0)
+    obstacle_icon = make_obstacle_icon(obstacle_radius, theme["border"][:3]) if obstacles else None
+
     grad = np.zeros((h, w, 3), dtype=np.uint8)
     for ch in range(3):
         grad[:, :, ch] = np.linspace(theme["top"][ch], theme["bottom"][ch], h).astype(np.uint8)[:, None]
@@ -634,6 +684,10 @@ def build_battle_clip(battle):
             d.line([(gx, top), (gx, bottom)], fill=theme["grid"], width=1)
         for gy in range(top, bottom, int(w * 0.09)):
             d.line([(left, gy), (right, gy)], fill=theme["grid"], width=1)
+
+        if obstacle_icon is not None:
+            for (ox, oy) in obstacles:
+                img.alpha_composite(obstacle_icon, (int(ox - obstacle_icon.width / 2), int(oy - obstacle_icon.height / 2)))
 
         tw = d.textlength(title_text, font=title_font)
         d.text((w / 2 - tw / 2, h * 0.045), title_text, font=title_font, fill=(255, 255, 255, 255))
@@ -951,3 +1005,70 @@ def build_sfx_array(battle):
 
 def battle_seed_text():
     return hashlib.sha256(str(random.random()).encode()).hexdigest()
+
+
+# --- Custom thumbnail (1280x720) -------------------------------------------
+# Built from the exact same theme/icons as the video itself, so the
+# thumbnail isn't a mismatched Canva template — it's a "poster" for the
+# specific battle that was just generated.
+
+def generate_thumbnail(battle, output_path, w=1280, h=720):
+    theme = pick_arena_theme(battle.get("seed", 0))
+    fighters = battle["fighters"]
+    n = battle["n_fighters"]
+
+    grad = np.zeros((h, w, 3), dtype=np.uint8)
+    for ch in range(3):
+        grad[:, :, ch] = np.linspace(theme["top"][ch], theme["bottom"][ch], w).astype(np.uint8)[None, :]
+    img = Image.fromarray(grad, mode="RGB").convert("RGBA")
+
+    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse([w * 0.30, -h * 0.35, w * 0.70, h * 0.75], fill=(*theme["particle"], 90))
+    glow = glow.filter(ImageFilter.GaussianBlur(90))
+    img = Image.alpha_composite(img, glow)
+
+    d = ImageDraw.Draw(img, "RGBA")
+    vs_font = get_font(int(h * 0.24))
+    title_font = get_font(int(h * 0.075))
+
+    if n == 2:
+        icon_size = int(h * 0.66)
+        left_icon = make_icon(fighters[0]["kind"], fighters[0]["color"], icon_size).rotate(18, resample=Image.BICUBIC, expand=True)
+        right_icon = make_icon(fighters[1]["kind"], fighters[1]["color"], icon_size).rotate(-18, resample=Image.BICUBIC, expand=True)
+        img.alpha_composite(left_icon, (int(w * 0.03), int(h / 2 - left_icon.height / 2)))
+        img.alpha_composite(right_icon, (int(w * 0.97 - right_icon.width), int(h / 2 - right_icon.height / 2)))
+
+        vs_text = "VS"
+        tw = d.textlength(vs_text, font=vs_font)
+        d.text((w / 2 - tw / 2, h * 0.30), vs_text, font=vs_font, fill=(255, 215, 60, 255), stroke_width=8, stroke_fill=(0, 0, 0, 255))
+
+        title_text = f"{fighters[0]['name']} vs {fighters[1]['name']}"
+    else:
+        icon_size = int(h * (0.42 if n == 3 else 0.36))
+        icons = [make_icon(f["kind"], f["color"], icon_size) for f in fighters]
+        gap = w * 0.02
+        total_w = sum(ic.width for ic in icons) + gap * (n - 1)
+        x = (w - total_w) / 2
+        for ic in icons:
+            img.alpha_composite(ic, (int(x), int(h * 0.52 - ic.height / 2)))
+            x += ic.width + gap
+
+        badge_text = f"{n}-WAY BATTLE"
+        bf = get_font(int(h * 0.09))
+        tw = d.textlength(badge_text, font=bf)
+        d.text((w / 2 - tw / 2, h * 0.06), badge_text, font=bf, fill=(255, 215, 60, 255), stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+        title_text = " vs ".join(f["name"] for f in fighters)
+
+    tw2 = d.textlength(title_text, font=title_font)
+    tw2 = min(tw2, w * 0.94)
+    while d.textlength(title_text, font=title_font) > w * 0.94:
+        title_font = get_font(title_font.size - 4) if hasattr(title_font, "size") else title_font
+        if not hasattr(title_font, "size") or title_font.size <= 30:
+            break
+    tw2 = d.textlength(title_text, font=title_font)
+    d.text((w / 2 - tw2 / 2, h * 0.86), title_text, font=title_font, fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 255))
+
+    img.convert("RGB").save(output_path, "JPEG", quality=92)
+    return output_path

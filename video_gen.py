@@ -18,7 +18,7 @@ import glob
 
 import numpy as np
 
-from battle_sim import simulate_battle, build_battle_clip, build_sfx_array, INTRO_SECONDS, SR as SFX_SR
+from battle_sim import simulate_battle, build_battle_clip, build_sfx_array, generate_thumbnail, INTRO_SECONDS, SR as SFX_SR
 
 # UTF-8 кодтеуін орнату консоль үшін
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -250,7 +250,7 @@ def get_local_music_attribution(filename):
 
 
 def get_recent_channel_titles(max_results=15):
-    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
+    scopes = ["https://www.googleapis.com/auth/youtube"]
     token_file = os.path.join(base_dir, "youtube_token.json")
 
     if not os.path.exists(token_file):
@@ -281,10 +281,10 @@ def get_recent_channel_titles(max_results=15):
         return []
 
 
-def upload_to_youtube(video_path, title, description, tags=None):
+def upload_to_youtube(video_path, title, description, tags=None, thumbnail_path=None):
     logger.info("📤 YouTube-ке жүктеу басталуда...")
 
-    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
+    scopes = ["https://www.googleapis.com/auth/youtube"]
     client_file = os.path.join(base_dir, "client_secrets.json")
     token_file = os.path.join(base_dir, "youtube_token.json")
 
@@ -353,6 +353,20 @@ def upload_to_youtube(video_path, title, description, tags=None):
         logger.info(f"   ID: {video_id}")
         logger.info(f"   URL: https://youtube.com/shorts/{video_id}")
 
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            try:
+                youtube.thumbnails().set(
+                    videoId=video_id,
+                    media_body=googleapiclient.http.MediaFileUpload(thumbnail_path)
+                ).execute()
+                logger.info("✓ Custom thumbnail орнатылды")
+            except Exception as e:
+                # Thumbnail-ды орнату толық "youtube" scope + арнаның телефон
+                # нөмірімен расталуын талап етеді (YouTube шектеуі, API-мен
+                # айналып өту мүмкін емес). Талап орындалмаса 403 қайтарады —
+                # бұл видео жүктелуін тоқтатпайды, тек warning ретінде логталады.
+                logger.warning(f"⚠️ Thumbnail орнату сәтсіз (video жүктелді): {str(e)[:200]}")
+
     except Exception as e:
         logger.error(f"❌ Жүктеу қатесі: {e}")
         raise
@@ -393,6 +407,14 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
             fighter_names, winner_name
         )
         logger.info(f"🏷️ Тақырып: {video_title}")
+
+        thumbnail_path = os.path.join(base_dir, "thumbnail.jpg")
+        try:
+            generate_thumbnail(battle, thumbnail_path)
+            logger.info("✓ Custom thumbnail дайын")
+        except Exception as e:
+            logger.warning(f"⚠️ Thumbnail генерациясы сәтсіз: {e}")
+            thumbnail_path = None
 
         battle_clip = None
         music_clip = None
@@ -481,7 +503,7 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
             logger.info(f"✓ Видео дайын: {final_output}")
 
             if not skip_upload:
-                retry_with_backoff(lambda: upload_to_youtube(final_output, video_title, video_description, video_tags))
+                retry_with_backoff(lambda: upload_to_youtube(final_output, video_title, video_description, video_tags, thumbnail_path))
                 send_telegram(
                     f"✅ <b>Жаңа Weapon Ball видео жүктелді!</b>\n"
                     f"⚔️ <b>{' vs '.join(fighter_names)}</b>\n"
