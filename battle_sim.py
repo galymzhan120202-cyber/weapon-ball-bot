@@ -42,6 +42,26 @@ WOOD = (110, 74, 40)
 STEEL = (150, 150, 160)
 
 
+def _wood_line(d, p1, p2, width, color=WOOD):
+    """A handle/shaft line with a thin darker grain streak running beside
+    it, instead of one flat color band."""
+    d.line([p1, p2], fill=(*color, 255), width=width)
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / length, dx / length
+    off = width * 0.22
+    g1 = (p1[0] + nx * off, p1[1] + ny * off)
+    g2 = (p2[0] + nx * off, p2[1] + ny * off)
+    dark = tuple(max(0, c - 35) for c in color)
+    d.line([g1, g2], fill=(*dark, 170), width=max(1, int(width * 0.18)))
+
+
+def _metal_fuller(d, p1, p2, width, color):
+    """A thin bright centerline groove down a blade, like a sword fuller —
+    reads as a machined/forged blade instead of a flat triangle."""
+    d.line([p1, p2], fill=(255, 255, 255, 90), width=max(1, int(width)))
+
+
 def _draw_icon_shape(kind, color, size=170):
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -51,25 +71,27 @@ def _draw_icon_shape(kind, color, size=170):
     if kind == "sword":
         bw = size * 0.09
         d.polygon([(cx, size * 0.05), (cx + bw, size * 0.55), (cx - bw, size * 0.55)], fill=c)
+        _metal_fuller(d, (cx, size * 0.09), (cx, size * 0.52), max(1, int(bw * 0.25)), color)
         d.rectangle([cx - size * 0.17, size * 0.55, cx + size * 0.17, size * 0.62], fill=(*STEEL, 255))
         d.rectangle([cx - bw * 0.5, size * 0.62, cx + bw * 0.5, size * 0.85], fill=(*WOOD, 255))
         d.ellipse([cx - bw * 0.8, size * 0.83, cx + bw * 0.8, size * 0.93], fill=(*WOOD, 255))
     elif kind == "axe":
-        d.line([(cx - size * 0.16, size * 0.90), (cx + size * 0.14, size * 0.12)], fill=(*WOOD, 255), width=int(size * 0.055))
+        _wood_line(d, (cx - size * 0.16, size * 0.90), (cx + size * 0.14, size * 0.12), int(size * 0.055))
         d.pieslice([cx - size * 0.06, size * 0.02, cx + size * 0.44, size * 0.42], start=195, end=345, fill=c)
     elif kind == "hammer":
-        d.line([(cx, size * 0.90), (cx, size * 0.36)], fill=(*WOOD, 255), width=int(size * 0.07))
+        _wood_line(d, (cx, size * 0.90), (cx, size * 0.36), int(size * 0.07))
         d.rounded_rectangle([cx - size * 0.24, size * 0.10, cx + size * 0.24, size * 0.40], radius=int(size * 0.05), fill=c)
     elif kind == "spear":
-        d.line([(cx, size * 0.95), (cx, size * 0.16)], fill=(*WOOD, 255), width=int(size * 0.045))
+        _wood_line(d, (cx, size * 0.95), (cx, size * 0.16), int(size * 0.045))
         d.polygon([(cx, size * 0.02), (cx + size * 0.075, size * 0.24), (cx - size * 0.075, size * 0.24)], fill=c)
     elif kind == "dagger":
         bw = size * 0.065
         d.polygon([(cx, size * 0.18), (cx + bw, size * 0.55), (cx - bw, size * 0.55)], fill=c)
+        _metal_fuller(d, (cx, size * 0.21), (cx, size * 0.52), max(1, int(bw * 0.25)), color)
         d.rectangle([cx - size * 0.12, size * 0.55, cx + size * 0.12, size * 0.60], fill=(*STEEL, 255))
         d.rectangle([cx - bw * 0.6, size * 0.60, cx + bw * 0.6, size * 0.75], fill=(*WOOD, 255))
     elif kind == "mace":
-        d.line([(cx, size * 0.92), (cx, size * 0.46)], fill=(*WOOD, 255), width=int(size * 0.06))
+        _wood_line(d, (cx, size * 0.92), (cx, size * 0.46), int(size * 0.06))
         d.ellipse([cx - size * 0.17, size * 0.13, cx + size * 0.17, size * 0.47], fill=c)
         for ang in range(0, 360, 45):
             rad = math.radians(ang)
@@ -77,7 +99,7 @@ def _draw_icon_shape(kind, color, size=170):
             y2 = size * 0.30 + math.sin(rad) * size * 0.25
             d.line([(cx, size * 0.30), (x2, y2)], fill=c, width=max(2, int(size * 0.025)))
     elif kind == "scythe":
-        d.line([(cx, size * 0.96), (cx, size * 0.30)], fill=(*WOOD, 255), width=int(size * 0.04))
+        _wood_line(d, (cx, size * 0.96), (cx, size * 0.30), int(size * 0.04))
         d.arc([cx - size * 0.36, size * 0.02, cx + size * 0.34, size * 0.52], start=200, end=340, fill=c, width=int(size * 0.07))
     elif kind == "katana":
         bw = size * 0.06
@@ -85,17 +107,18 @@ def _draw_icon_shape(kind, color, size=170):
             (cx + size * 0.06, size * 0.04), (cx + bw, size * 0.30), (cx + bw * 0.4, size * 0.58),
             (cx - bw * 0.4, size * 0.58), (cx - bw * 0.3, size * 0.30),
         ], fill=c)
+        _metal_fuller(d, (cx + size * 0.03, size * 0.08), (cx - bw * 0.35, size * 0.56), max(1, int(bw * 0.2)), color)
         d.rectangle([cx - size * 0.15, size * 0.58, cx + size * 0.15, size * 0.64], fill=(20, 20, 24, 255))
         d.rectangle([cx - bw * 0.5, size * 0.64, cx + bw * 0.5, size * 0.88], fill=(30, 30, 34, 255))
         for i in range(3):
             yy = size * (0.66 + i * 0.07)
             d.line([(cx - bw * 0.5, yy), (cx + bw * 0.5, yy + size * 0.035)], fill=(200, 200, 60, 255), width=2)
     elif kind == "warhammer":
-        d.line([(cx, size * 0.94), (cx, size * 0.40)], fill=(*WOOD, 255), width=int(size * 0.09))
+        _wood_line(d, (cx, size * 0.94), (cx, size * 0.40), int(size * 0.09))
         d.rounded_rectangle([cx - size * 0.30, size * 0.06, cx + size * 0.30, size * 0.44], radius=int(size * 0.06), fill=c)
         d.rounded_rectangle([cx - size * 0.30, size * 0.06, cx + size * 0.30, size * 0.44], radius=int(size * 0.06), outline=(40, 40, 44, 255), width=3)
     elif kind == "trident":
-        d.line([(cx, size * 0.96), (cx, size * 0.22)], fill=(*WOOD, 255), width=int(size * 0.045))
+        _wood_line(d, (cx, size * 0.96), (cx, size * 0.22), int(size * 0.045))
         for off in (-0.16, 0, 0.16):
             d.polygon([
                 (cx + size * off, size * 0.02), (cx + size * off + size * 0.045, size * 0.26),
@@ -108,7 +131,7 @@ def _draw_icon_shape(kind, color, size=170):
         d.rectangle([cx - bw * 0.35, size * 0.46, cx + bw * 0.35, size * 0.78], fill=(60, 60, 66, 255))
         d.ellipse([cx - size * 0.11, size * 0.78, cx + size * 0.11, size * 0.94], outline=(60, 60, 66, 255), width=max(2, int(size * 0.025)))
     elif kind == "flail":
-        d.line([(cx, size * 0.94), (cx, size * 0.62)], fill=(*WOOD, 255), width=int(size * 0.055))
+        _wood_line(d, (cx, size * 0.94), (cx, size * 0.62), int(size * 0.055))
         for i in range(3):
             yy = size * (0.58 - i * 0.09)
             d.ellipse([cx - size * 0.045, yy - size * 0.03, cx + size * 0.045, yy + size * 0.03], outline=(120, 120, 130, 255), width=3)
@@ -147,7 +170,7 @@ def _draw_icon_shape(kind, color, size=170):
             side = 1 if i % 2 == 0 else -1
             d.polygon([(cx + side * size * 0.10, yy), (cx + side * size * 0.16, yy + size * 0.02), (cx + side * size * 0.10, yy + size * 0.04)], fill=(230, 230, 235, 255))
     elif kind == "staff":
-        d.line([(cx, size * 0.96), (cx, size * 0.06)], fill=(*WOOD, 255), width=int(size * 0.05))
+        _wood_line(d, (cx, size * 0.96), (cx, size * 0.06), int(size * 0.05))
         d.ellipse([cx - size * 0.11, size * 0.02, cx + size * 0.11, size * 0.20], outline=c, width=max(3, int(size * 0.03)))
     elif kind == "shuriken":
         pts = []
