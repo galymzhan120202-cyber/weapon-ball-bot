@@ -80,6 +80,28 @@ TITLE_TEMPLATES_MULTI = [
     "{names} — Who Wins the Melee?",
 ]
 
+DESCRIPTION_TEMPLATES = [
+    "{names} — full physics weapon ball battle!\n"
+    "Winner: {winner} 🏆\n\n"
+    "Fully generated battle, zero footage, zero copyright risk. New fight every upload.",
+
+    "⚔️🔥 {names} just went head to head in a totally random physics arena!\n\n"
+    "🏆 Winner: {winner}\n\n"
+    "No script, no real footage — just pure chaotic physics. New battle every day!",
+
+    "Only ONE weapon walks away... 💥\n\n"
+    "{names}\n"
+    "🏆 {winner} takes the win!\n\n"
+    "Every matchup, every arena, every outcome — 100% randomly generated.",
+
+    "🎲 Random matchup. Zero rules. One winner.\n\n"
+    "{names} → {winner} wins!\n\n"
+    "New chaos every single upload — who do you think should've won?",
+
+    "{names} threw down in the arena and only {winner} made it out. 🏆\n\n"
+    "Fully code-generated battle — no scripts, no stock footage, no copyright risk.",
+]
+
 
 def pick_rotating_tags(count=6):
     return ' '.join(random.sample(STRONG_HASHTAG_POOL, min(count, len(STRONG_HASHTAG_POOL))))
@@ -96,12 +118,8 @@ def build_title_and_description(fighter_names, winner_name):
 
     weapon_tags = ' '.join(f"#{name.lower().replace(' ', '')}" for name in fighter_names[:3])
     hashtags = f"{weapon_tags} {pick_rotating_tags()}"
-    description = (
-        f"{names_joined} — full physics weapon ball battle!\n"
-        f"Winner: {winner_name} 🏆\n\n"
-        f"Fully generated battle, zero footage, zero copyright risk. New fight every upload.\n\n"
-        f"{hashtags}"
-    )
+    body = random.choice(DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
+    description = f"{body}\n\n{hashtags}"
     tags = list(fighter_names) + ["weapon ball", "battle", "physics simulation", "shorts"]
     return title, description, tags
 
