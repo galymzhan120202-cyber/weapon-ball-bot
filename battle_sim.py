@@ -338,25 +338,98 @@ def make_icon(kind, color, size=170, material="metal"):
     return _polish_icon(_draw_icon_shape(kind, color, size), material)
 
 
-def make_obstacle_icon(radius_px, accent_color):
-    """A jagged rock/crystal obstacle, tinted with the arena theme's accent
-    color, built with the same outline/shadow/sheen pass as weapon icons so
-    it reads as part of the same visual system."""
+def _draw_obstacle_shape(kind, radius_px, accent_color):
+    """Draws one of several obstacle silhouettes matched to an arena theme
+    (jagged rock, ice shard, glowing lava rock, tech crate, bone, coral,
+    gold crystal, sandstone) so the arena's static hazard reads as part of
+    that theme instead of one generic rock reused everywhere."""
     size = int(radius_px * 2.5)
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     cx = cy = size / 2
     shape_rng = random.Random(42)
-    n_pts = 9
-    pts = []
-    for i in range(n_pts):
-        ang = math.radians(i * 360 / n_pts)
-        rr = radius_px * shape_rng.uniform(0.78, 1.0)
-        pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr))
-    d.polygon(pts, fill=(66, 64, 62, 255))
-    for i in range(0, n_pts, 3):
-        d.line([pts[i], (cx, cy)], fill=(*accent_color, 130), width=2)
-    return _polish_icon(img)
+
+    if kind == "ice_shard":
+        n_pts = 7
+        pts = []
+        for i in range(n_pts):
+            ang = math.radians(-90 + i * 360 / n_pts)
+            rr = radius_px * (1.15 if i % 2 == 0 else 0.5) * shape_rng.uniform(0.9, 1.05)
+            pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr * 1.3))
+        d.polygon(pts, fill=(190, 230, 250, 220))
+        for i in range(0, n_pts, 2):
+            d.line([pts[i], (cx, cy - radius_px * 0.2)], fill=(255, 255, 255, 170), width=2)
+        d.polygon(pts, outline=(*accent_color, 255), width=2)
+
+    elif kind == "lava_rock":
+        n_pts = 9
+        pts = []
+        for i in range(n_pts):
+            ang = math.radians(i * 360 / n_pts)
+            rr = radius_px * shape_rng.uniform(0.78, 1.0)
+            pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr))
+        d.polygon(pts, fill=(40, 24, 20, 255))
+        for i in range(0, n_pts, 2):
+            d.line([pts[i], (cx, cy)], fill=(*accent_color, 220), width=3)
+        d.ellipse([cx - radius_px * 0.28, cy - radius_px * 0.28, cx + radius_px * 0.28, cy + radius_px * 0.28], fill=(*accent_color, 255))
+
+    elif kind == "tech_crate":
+        r2 = radius_px * 0.82
+        d.rounded_rectangle([cx - r2, cy - r2, cx + r2, cy + r2], radius=r2 * 0.15, fill=(45, 48, 52, 255))
+        d.rectangle([cx - r2, cy - r2 * 0.15, cx + r2, cy + r2 * 0.15], fill=(*accent_color, 200))
+        for ex, ey in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            kx, ky = cx + ex * r2 * 0.75, cy + ey * r2 * 0.75
+            d.ellipse([kx - 3, ky - 3, kx + 3, ky + 3], fill=(*accent_color, 255))
+
+    elif kind == "bone":
+        d.ellipse([cx - radius_px, cy - radius_px * 0.35, cx + radius_px, cy + radius_px * 0.35], fill=(225, 220, 205, 255))
+        for sx in (-1, 1):
+            kx = cx + sx * radius_px * 0.85
+            d.ellipse([kx - radius_px * 0.32, cy - radius_px * 0.5, kx + radius_px * 0.32, cy + radius_px * 0.5], fill=(225, 220, 205, 255))
+        d.ellipse([cx - radius_px * 0.18, cy - radius_px * 0.18, cx + radius_px * 0.18, cy + radius_px * 0.18], fill=(*accent_color, 200))
+
+    elif kind == "coral":
+        d.polygon([(cx - radius_px * 0.3, cy + radius_px), (cx + radius_px * 0.3, cy + radius_px), (cx, cy + radius_px * 0.3)], fill=(*accent_color, 255))
+        for ang_deg in (-55, -20, 15, 50):
+            ang = math.radians(ang_deg - 90)
+            ex, ey = cx + math.cos(ang) * radius_px, cy + math.sin(ang) * radius_px
+            d.line([(cx, cy + radius_px * 0.3), (ex, ey)], fill=(*accent_color, 230), width=max(3, int(radius_px * 0.18)))
+            d.ellipse([ex - radius_px * 0.12, ey - radius_px * 0.12, ex + radius_px * 0.12, ey + radius_px * 0.12], fill=(*accent_color, 255))
+
+    elif kind == "gold_crystal":
+        pts = [(cx, cy - radius_px), (cx + radius_px * 0.62, cy - radius_px * 0.15), (cx + radius_px * 0.32, cy + radius_px),
+               (cx - radius_px * 0.32, cy + radius_px), (cx - radius_px * 0.62, cy - radius_px * 0.15)]
+        d.polygon(pts, fill=(60, 46, 10, 255))
+        d.line([pts[0], (cx, cy + radius_px * 0.3)], fill=(*accent_color, 220), width=2)
+        d.polygon(pts, outline=(*accent_color, 255), width=2)
+
+    elif kind == "sand_rock":
+        n_pts = 8
+        pts = []
+        for i in range(n_pts):
+            ang = math.radians(i * 360 / n_pts)
+            rr = radius_px * shape_rng.uniform(0.85, 1.0)
+            pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr * 0.8))
+        d.polygon(pts, fill=(70, 56, 34, 255))
+        for i in range(0, n_pts, 3):
+            d.line([pts[i], (cx, cy)], fill=(*accent_color, 110), width=2)
+
+    else:  # "rock" default
+        n_pts = 9
+        pts = []
+        for i in range(n_pts):
+            ang = math.radians(i * 360 / n_pts)
+            rr = radius_px * shape_rng.uniform(0.78, 1.0)
+            pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr))
+        d.polygon(pts, fill=(66, 64, 62, 255))
+        for i in range(0, n_pts, 3):
+            d.line([pts[i], (cx, cy)], fill=(*accent_color, 130), width=2)
+
+    return img
+
+
+def make_obstacle_icon(radius_px, accent_color, kind="rock"):
+    return _polish_icon(_draw_obstacle_shape(kind, radius_px, accent_color))
 
 
 # --- Fonts ---------------------------------------------------------------
@@ -675,22 +748,22 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 # of the battle seed, independent of the physics RNG stream.
 
 ARENA_THEMES = [
-    {"name": "Midnight Arena", "top": (14, 12, 26), "bottom": (4, 4, 10), "grid": (255, 255, 255, 12), "border": (90, 90, 110, 255), "particle": (150, 150, 210)},
-    {"name": "Neon City", "top": (42, 8, 52), "bottom": (10, 2, 16), "grid": (255, 70, 210, 20), "border": (210, 70, 230, 255), "particle": (255, 90, 220)},
-    {"name": "Lava Pit", "top": (48, 10, 4), "bottom": (14, 4, 2), "grid": (255, 130, 45, 18), "border": (235, 100, 35, 255), "particle": (255, 150, 60)},
-    {"name": "Ice Cave", "top": (6, 26, 40), "bottom": (2, 8, 14), "grid": (150, 220, 255, 20), "border": (130, 205, 245, 255), "particle": (190, 235, 255)},
-    {"name": "Cyber Grid", "top": (4, 18, 9), "bottom": (2, 4, 4), "grid": (60, 255, 130, 24), "border": (60, 225, 115, 255), "particle": (90, 255, 150)},
-    {"name": "Deep Space", "top": (6, 4, 28), "bottom": (2, 2, 9), "grid": (150, 150, 255, 12), "border": (120, 110, 225, 255), "particle": (205, 205, 255)},
-    {"name": "Toxic Lab", "top": (10, 34, 6), "bottom": (3, 10, 2), "grid": (155, 255, 65, 18), "border": (145, 235, 55, 255), "particle": (175, 255, 85)},
-    {"name": "Sunset Coliseum", "top": (48, 16, 27), "bottom": (14, 4, 10), "grid": (255, 165, 125, 16), "border": (235, 125, 155, 255), "particle": (255, 175, 135)},
-    {"name": "Volcanic Forge", "top": (30, 4, 4), "bottom": (8, 2, 2), "grid": (255, 90, 30, 20), "border": (255, 60, 20, 255), "particle": (255, 120, 40)},
-    {"name": "Frozen Peak", "top": (10, 14, 34), "bottom": (3, 5, 12), "grid": (200, 220, 255, 18), "border": (170, 200, 250, 255), "particle": (220, 235, 255)},
-    {"name": "Golden Temple", "top": (40, 28, 4), "bottom": (12, 8, 1), "grid": (255, 210, 90, 20), "border": (240, 190, 70, 255), "particle": (255, 220, 130)},
-    {"name": "Storm Clouds", "top": (18, 20, 28), "bottom": (5, 6, 9), "grid": (170, 190, 220, 18), "border": (150, 175, 210, 255), "particle": (200, 215, 255)},
-    {"name": "Blood Moon", "top": (34, 3, 6), "bottom": (9, 1, 2), "grid": (220, 40, 50, 18), "border": (200, 30, 45, 255), "particle": (255, 70, 80)},
-    {"name": "Coral Reef", "top": (4, 30, 32), "bottom": (2, 8, 10), "grid": (100, 230, 210, 18), "border": (90, 220, 200, 255), "particle": (255, 130, 170)},
-    {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130)},
-    {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60)},
+    {"name": "Midnight Arena", "top": (14, 12, 26), "bottom": (4, 4, 10), "grid": (255, 255, 255, 12), "border": (90, 90, 110, 255), "particle": (150, 150, 210), "obstacle_kind": "rock", "particle_kind": "up"},
+    {"name": "Neon City", "top": (42, 8, 52), "bottom": (10, 2, 16), "grid": (255, 70, 210, 20), "border": (210, 70, 230, 255), "particle": (255, 90, 220), "obstacle_kind": "tech_crate", "particle_kind": "up"},
+    {"name": "Lava Pit", "top": (48, 10, 4), "bottom": (14, 4, 2), "grid": (255, 130, 45, 18), "border": (235, 100, 35, 255), "particle": (255, 150, 60), "obstacle_kind": "lava_rock", "particle_kind": "up"},
+    {"name": "Ice Cave", "top": (6, 26, 40), "bottom": (2, 8, 14), "grid": (150, 220, 255, 20), "border": (130, 205, 245, 255), "particle": (190, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down"},
+    {"name": "Cyber Grid", "top": (4, 18, 9), "bottom": (2, 4, 4), "grid": (60, 255, 130, 24), "border": (60, 225, 115, 255), "particle": (90, 255, 150), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse"},
+    {"name": "Deep Space", "top": (6, 4, 28), "bottom": (2, 2, 9), "grid": (150, 150, 255, 12), "border": (120, 110, 225, 255), "particle": (205, 205, 255), "obstacle_kind": "rock", "particle_kind": "still_pulse"},
+    {"name": "Toxic Lab", "top": (10, 34, 6), "bottom": (3, 10, 2), "grid": (155, 255, 65, 18), "border": (145, 235, 55, 255), "particle": (175, 255, 85), "obstacle_kind": "tech_crate", "particle_kind": "up"},
+    {"name": "Sunset Coliseum", "top": (48, 16, 27), "bottom": (14, 4, 10), "grid": (255, 165, 125, 16), "border": (235, 125, 155, 255), "particle": (255, 175, 135), "obstacle_kind": "rock", "particle_kind": "sideways"},
+    {"name": "Volcanic Forge", "top": (30, 4, 4), "bottom": (8, 2, 2), "grid": (255, 90, 30, 20), "border": (255, 60, 20, 255), "particle": (255, 120, 40), "obstacle_kind": "lava_rock", "particle_kind": "up"},
+    {"name": "Frozen Peak", "top": (10, 14, 34), "bottom": (3, 5, 12), "grid": (200, 220, 255, 18), "border": (170, 200, 250, 255), "particle": (220, 235, 255), "obstacle_kind": "ice_shard", "particle_kind": "down"},
+    {"name": "Golden Temple", "top": (40, 28, 4), "bottom": (12, 8, 1), "grid": (255, 210, 90, 20), "border": (240, 190, 70, 255), "particle": (255, 220, 130), "obstacle_kind": "gold_crystal", "particle_kind": "up"},
+    {"name": "Storm Clouds", "top": (18, 20, 28), "bottom": (5, 6, 9), "grid": (170, 190, 220, 18), "border": (150, 175, 210, 255), "particle": (200, 215, 255), "obstacle_kind": "rock", "particle_kind": "rain"},
+    {"name": "Blood Moon", "top": (34, 3, 6), "bottom": (9, 1, 2), "grid": (220, 40, 50, 18), "border": (200, 30, 45, 255), "particle": (255, 70, 80), "obstacle_kind": "bone", "particle_kind": "up"},
+    {"name": "Coral Reef", "top": (4, 30, 32), "bottom": (2, 8, 10), "grid": (100, 230, 210, 18), "border": (90, 220, 200, 255), "particle": (255, 130, 170), "obstacle_kind": "coral", "particle_kind": "bubble"},
+    {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130), "obstacle_kind": "sand_rock", "particle_kind": "sideways"},
+    {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse"},
 ]
 
 
@@ -857,7 +930,7 @@ def build_battle_clip(battle):
 
     obstacles = battle.get("obstacles") or []
     obstacle_radius = battle.get("obstacle_radius", 0)
-    obstacle_icon = make_obstacle_icon(obstacle_radius, theme["border"][:3]) if obstacles else None
+    obstacle_icon = make_obstacle_icon(obstacle_radius, theme["border"][:3], theme.get("obstacle_kind", "rock")) if obstacles else None
 
     grad = np.zeros((h, w, 3), dtype=np.uint8)
     for ch in range(3):
@@ -929,14 +1002,48 @@ def build_battle_clip(battle):
         img = base_bg.copy().convert("RGBA")
         d = ImageDraw.Draw(img, "RGBA")
 
+        particle_kind = theme.get("particle_kind", "up")
         for p in ambient_particles:
             speed = 8 + p["depth"] * 30
-            py = (p["y"] - t * speed) % (h * 1.1)
-            px = (p["x"] + p["drift_x"] * t + 8 * math.sin(t * 0.5 + p["phase"])) % w
             twinkle = 0.5 + 0.5 * math.sin(t * 1.8 + p["phase"])
-            alpha = int(30 + 70 * p["depth"] * twinkle)
             r = p["r"]
-            d.ellipse([px - r, py - r, px + r, py + r], fill=(*theme["particle"], alpha))
+            if particle_kind == "down":
+                # snow: drifts gently downward
+                py = (p["y"] + t * speed * 0.6) % (h * 1.1)
+                px = (p["x"] + p["drift_x"] * t + 8 * math.sin(t * 0.5 + p["phase"])) % w
+                alpha = int(35 + 65 * p["depth"])
+                d.ellipse([px - r, py - r, px + r, py + r], fill=(*theme["particle"], alpha))
+            elif particle_kind == "rain":
+                # storm rain: fast falling streaks, no twinkle
+                fall_speed = speed * 3.2
+                py = (p["y"] + t * fall_speed) % (h * 1.1)
+                px = (p["x"] + p["drift_x"] * 0.3 * t) % w
+                alpha = int(40 + 60 * p["depth"])
+                streak = 6 + p["depth"] * 10
+                d.line([(px, py), (px - streak * 0.25, py - streak)], fill=(*theme["particle"], alpha), width=max(1, int(r * 0.6)))
+            elif particle_kind == "sideways":
+                # blown sand/dust: drifts across, low vertical bob
+                px = (p["x"] + t * speed * 1.4) % w
+                py = (p["y"] + 6 * math.sin(t * 0.6 + p["phase"])) % h
+                alpha = int(30 + 60 * p["depth"] * twinkle)
+                d.ellipse([px - r * 1.4, py - r * 0.6, px + r * 1.4, py + r * 0.6], fill=(*theme["particle"], alpha))
+            elif particle_kind == "bubble":
+                # rising bubbles: outline ring, not filled
+                py = (p["y"] - t * speed * 0.5) % (h * 1.1)
+                px = (p["x"] + 10 * math.sin(t * 0.7 + p["phase"])) % w
+                alpha = int(35 + 55 * p["depth"])
+                d.ellipse([px - r, py - r, px + r, py + r], outline=(*theme["particle"], alpha), width=max(1, int(r * 0.4)))
+            elif particle_kind == "still_pulse":
+                # glowing motes/stars: barely drift, pulse in place
+                px = (p["x"] + 3 * math.sin(t * 0.4 + p["phase"])) % w
+                py = (p["y"] + 3 * math.cos(t * 0.4 + p["phase"])) % h
+                alpha = int(25 + 90 * p["depth"] * twinkle)
+                d.ellipse([px - r, py - r, px + r, py + r], fill=(*theme["particle"], alpha))
+            else:  # "up" — embers/motes rising
+                py = (p["y"] - t * speed) % (h * 1.1)
+                px = (p["x"] + p["drift_x"] * t + 8 * math.sin(t * 0.5 + p["phase"])) % w
+                alpha = int(30 + 70 * p["depth"] * twinkle)
+                d.ellipse([px - r, py - r, px + r, py + r], fill=(*theme["particle"], alpha))
 
         d.rounded_rectangle([left, top, right, bottom], radius=18, outline=theme["border"], width=4)
         for gx in range(left, right, int(w * 0.09)):

@@ -1,5 +1,6 @@
 import os
 import random
+import re
 import requests
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
@@ -18,7 +19,7 @@ import glob
 
 import numpy as np
 
-from battle_sim import simulate_battle, build_battle_clip, build_sfx_array, generate_thumbnail, INTRO_SECONDS, SR as SFX_SR
+from battle_sim import simulate_battle, build_battle_clip, build_sfx_array, generate_thumbnail, INTRO_SECONDS, SR as SFX_SR, WEAPON_POOL
 
 # UTF-8 кодтеуін орнату консоль үшін
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -35,6 +36,9 @@ MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
 RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
 BATTLE_MAX_SECONDS = int(os.getenv('BATTLE_MAX_SECONDS', '28'))
 BATTLE_MIN_SECONDS = int(os.getenv('BATTLE_MIN_SECONDS', '13'))
+
+AVOID_REPEAT_LOOKBACK = int(os.getenv('AVOID_REPEAT_LOOKBACK', '12'))
+AVOID_REPEAT_MAX_ATTEMPTS = int(os.getenv('AVOID_REPEAT_MAX_ATTEMPTS', '6'))
 
 YOUTUBE_CATEGORY_ID = os.getenv('YOUTUBE_CATEGORY_ID', '20')  # 20 = Gaming
 YOUTUBE_PRIVACY_STATUS = os.getenv('YOUTUBE_PRIVACY_STATUS', 'public')
@@ -299,6 +303,29 @@ def get_recent_channel_titles(max_results=15):
         return []
 
 
+_ALL_WEAPON_NAMES = [w["name"] for w in WEAPON_POOL]
+
+
+def _weapon_set_from_title(title):
+    """Extracts which weapon names are mentioned in a video title, using
+    word-boundary matching so e.g. "Hammer" doesn't false-match inside
+    "Warhammer"."""
+    found = set()
+    for name in _ALL_WEAPON_NAMES:
+        if re.search(r'\b' + re.escape(name) + r'\b', title, re.IGNORECASE):
+            found.add(name)
+    return frozenset(found)
+
+
+def get_recent_matchups(max_results=12):
+    """Returns the set of weapon-matchups (as frozensets of names) seen in
+    the channel's most recent uploads, so a freshly generated battle can be
+    checked against them and re-rolled if it's an exact repeat."""
+    titles = get_recent_channel_titles(max_results)
+    matchups = [_weapon_set_from_title(t) for t in titles]
+    return [m for m in matchups if len(m) >= 2]
+
+
 def upload_to_youtube(video_path, title, description, tags=None, thumbnail_path=None):
     logger.info("📤 YouTube-ке жүктеу басталуда...")
 
@@ -413,6 +440,8 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
         ensure_directories_exist()
         cleanup_temp_files()
 
+        recent_matchups = get_recent_matchups(AVOID_REPEAT_LOOKBACK)
+
         seed = random.randint(1, 2**31 - 1)
         battle = simulate_battle(
             w=VIDEO_WIDTH, h=VIDEO_HEIGHT, seed=seed, fps=VIDEO_FPS,
@@ -420,6 +449,20 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
             n_fighters=n_fighters,
         )
         fighter_names = [f["name"] for f in battle["fighters"]]
+
+        attempts = 1
+        while frozenset(fighter_names) in recent_matchups and attempts < AVOID_REPEAT_MAX_ATTEMPTS:
+            seed = random.randint(1, 2**31 - 1)
+            battle = simulate_battle(
+                w=VIDEO_WIDTH, h=VIDEO_HEIGHT, seed=seed, fps=VIDEO_FPS,
+                max_seconds=BATTLE_MAX_SECONDS, min_seconds=BATTLE_MIN_SECONDS,
+                n_fighters=n_fighters,
+            )
+            fighter_names = [f["name"] for f in battle["fighters"]]
+            attempts += 1
+        if attempts > 1:
+            logger.info(f"🔁 Қайталанатын матчап аттап өтілді ({attempts} әрекет)")
+
         winner_name = battle["winner_name"]
         logger.info(f"⚔️ Шайқас ({battle['n_fighters']}): {' vs '.join(fighter_names)} — жеңімпаз: {winner_name}")
 
