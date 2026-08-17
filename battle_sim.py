@@ -626,12 +626,15 @@ def build_battle_clip(battle):
 
     icons = [make_icon(f["kind"], f["color"], icon_size) for f in fighters]
     ko_frame_by_idx = {i: frame for (frame, i, _, _) in battle["ko_events"]}
+    first_hit_frame = min(battle["hit_frame_flags"].keys()) if battle["hit_frame_flags"] else None
+    FIRST_BLOOD_FRAMES = int(fps * 0.9)
 
     font_scale = {2: 1.0, 3: 0.84, 4: 0.70}[n]
     title_font = get_font(int(h * 0.036 * font_scale))
     hp_font = get_font(max(14, int(h * 0.022 * font_scale)))
     win_font = get_font(int(h * 0.055))
     dmg_font = get_font(int(h * 0.026))
+    first_blood_font = get_font(int(h * 0.048))
     count_font = get_font(int(h * 0.11))
     ko_font = get_font(int(h * 0.026))
     replay_font = get_font(int(h * 0.038))
@@ -705,11 +708,43 @@ def build_battle_clip(battle):
     bar_y = h * 0.115
     bar_xs = [bar_area_x0 + i * (bar_w + bar_gap) for i in range(n)]
 
+    # Entrance animation: instead of sitting frozen during "3-2-1", each
+    # fighter flies in from off-screen (outward along the same direction
+    # they already spawn on) and spins to a stop by the time "FIGHT!" hits —
+    # gives the first 3 seconds, which matter most for Shorts retention,
+    # actual motion instead of a static card.
+    arena_cx, arena_cy = (left + right) / 2, (top + bottom) / 2
+    entry_start = []
+    entry_spin = []
+    entry_rng = random.Random(hashlib.sha256((str(battle.get("seed", 0)) + "entry").encode()).hexdigest())
+    for i in range(n):
+        fx0, fy0, _ = frames[0]["pos"][i]
+        dx, dy = fx0 - arena_cx, fy0 - arena_cy
+        dist = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / dist, dy / dist
+        offscreen = max(w, h) * 0.75
+        entry_start.append((fx0 + ux * offscreen, fy0 + uy * offscreen))
+        entry_spin.append(entry_rng.choice([-1, 1]) * entry_rng.uniform(420, 720))
+    ENTRY_ARRIVE_FRAC = 0.7  # arrives/settles a bit before the countdown ends
+
+    def _intro_state(raw_idx):
+        ease_t = min(1.0, (raw_idx / max(1, intro_frames)) / ENTRY_ARRIVE_FRAC)
+        ease = 1 - (1 - ease_t) ** 3
+        pos = []
+        for i in range(n):
+            fx0, fy0, fang0 = frames[0]["pos"][i]
+            sx, sy = entry_start[i]
+            x = sx + (fx0 - sx) * ease
+            y = sy + (fy0 - sy) * ease
+            ang = fang0 + entry_spin[i] * (1 - ease)
+            pos.append((x, y, ang))
+        return {"pos": pos, "hp": frames[0]["hp"], "alive": frames[0]["alive"]}
+
     def make_frame(t):
         raw_idx = int(round(t * fps))
         in_intro = raw_idx < intro_frames
         idx = 0 if in_intro else min(n_frames - 1, raw_idx - intro_frames)
-        st = frames[idx]
+        st = _intro_state(raw_idx) if in_intro else frames[idx]
         img = base_bg.copy().convert("RGBA")
         d = ImageDraw.Draw(img, "RGBA")
 
@@ -765,6 +800,19 @@ def build_battle_clip(battle):
                     amt = max(0.0, (5 - age)) * min(7.0, dmg / 18)
                     shake_dx = (_det_jitter(hi) * 2 - 1) * amt
                     shake_dy = (_det_jitter(hi + 4096) * 2 - 1) * amt
+
+        first_blood_age = idx - first_hit_frame if (not in_intro and first_hit_frame is not None) else -1
+        if 0 <= first_blood_age <= FIRST_BLOOD_FRAMES:
+            pop = 1.0 + 0.35 * max(0, 1 - first_blood_age / 6)
+            fade_start = int(FIRST_BLOOD_FRAMES * 0.7)
+            if first_blood_age < fade_start:
+                fb_alpha = 255
+            else:
+                fb_alpha = max(0, int(255 * (1 - (first_blood_age - fade_start) / max(1, FIRST_BLOOD_FRAMES - fade_start))))
+            fbf = get_font(int(first_blood_font.size * pop)) if hasattr(first_blood_font, "size") else first_blood_font
+            fb_text = "FIRST BLOOD!"
+            fbw = d.textlength(fb_text, font=fbf)
+            d.text((w / 2 - fbw / 2, h * 0.30), fb_text, font=fbf, fill=(255, 60, 40, fb_alpha), stroke_width=4, stroke_fill=(0, 0, 0, fb_alpha))
 
         if not in_intro:
             for back, al in TRAIL_STEPS:
