@@ -7,6 +7,7 @@ Video frames, HP bars, hit flashes and impact sound effects are all
 synthesized from the physics log, so a battle is fully reproducible from
 its `seed`.
 """
+import colorsys
 import hashlib
 import math
 import random
@@ -69,6 +70,35 @@ _MATERIAL_PHYSICS = {
     "wood": {"elasticity": 0.90, "friction": 0.30},
     "whip": {"elasticity": 0.70, "friction": 0.44},
 }
+
+
+def _color_dist(c1, c2):
+    return math.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
+
+
+def _boost_color_contrast(fighters, rng):
+    """Several weapons (Sword/Katana/Claws/Rapier/Kunai) share a near-white/
+    silver color — fine on their own, but if two of them end up in the same
+    battle, their HP bars, name labels, and motion trails become nearly
+    impossible to tell apart at a glance. Nudge the hue (and raise
+    saturation, since a hue rotation does nothing to a near-gray color) of
+    any fighter whose color is too close to an already-placed one, so every
+    fighter in a given battle reads as visually distinct. Mutates a
+    battle-local copy, never the shared WEAPON_POOL entries."""
+    used = []
+    for f in fighters:
+        color = f["color"]
+        tries = 0
+        while any(_color_dist(color, u) < 70 for u in used) and tries < 6:
+            h, s, v = colorsys.rgb_to_hsv(*(c / 255 for c in color))
+            h = (h + 0.16 + tries * 0.07) % 1.0
+            s = max(s, 0.35 + tries * 0.1)
+            r, g, b = colorsys.hsv_to_rgb(h, s, v)
+            color = (int(r * 255), int(g * 255), int(b * 255))
+            tries += 1
+        f["color"] = color
+        used.append(color)
+
 
 WOOD = (110, 74, 40)
 STEEL = (150, 150, 160)
@@ -316,6 +346,15 @@ def _polish_icon(icon, material="metal"):
     shifted_shadow.paste(shadow, (4, 6), shadow)
     result.alpha_composite(shifted_shadow)
 
+    # soft light halo, wider than the outline below — this is what actually
+    # separates the icon from same-toned dark arena backgrounds (Midnight,
+    # Deep Space, Blood Moon), where a plain near-black outline on a
+    # near-black backdrop nearly disappears.
+    halo_alpha = alpha.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(2))
+    halo = Image.new("RGBA", (w, h), (235, 238, 245, 255))
+    halo.putalpha(halo_alpha.point(lambda p: int(p * 0.35)))
+    result.alpha_composite(halo)
+
     # outline: dilated silhouette in a near-black tone, sits just behind the icon
     outline_alpha = alpha.filter(ImageFilter.MaxFilter(5))
     outline = Image.new("RGBA", (w, h), (14, 14, 18, 255))
@@ -467,6 +506,22 @@ _OBSTACLE_MATERIAL = {
     "sand_rock": "blunt",
 }
 
+# Physical bounce feel per obstacle kind — previously every obstacle used
+# the exact same elasticity=1.0/friction=0.0 regardless of what it looked
+# like. Ice is slick and stays lively, tech crates are hard and springy,
+# coral/bone/sand are soft/grippy and dull the bounce, matching each
+# obstacle's now-distinct visual material.
+_OBSTACLE_PHYSICS = {
+    "rock": {"elasticity": 0.88, "friction": 0.12},
+    "ice_shard": {"elasticity": 1.00, "friction": 0.03},
+    "lava_rock": {"elasticity": 0.82, "friction": 0.18},
+    "tech_crate": {"elasticity": 0.95, "friction": 0.08},
+    "bone": {"elasticity": 0.78, "friction": 0.22},
+    "coral": {"elasticity": 0.72, "friction": 0.28},
+    "gold_crystal": {"elasticity": 0.98, "friction": 0.06},
+    "sand_rock": {"elasticity": 0.68, "friction": 0.32},
+}
+
 
 def make_obstacle_icon(radius_px, accent_color, kind="rock"):
     material = _OBSTACLE_MATERIAL.get(kind, "blunt")
@@ -511,13 +566,15 @@ N_FIGHTERS_WEIGHTS = {2: 55, 3: 28, 4: 17}
 
 def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighters=None):
     rng = random.Random(seed)
+    theme = pick_arena_theme(seed)
 
     if n_fighters is None:
         options = list(N_FIGHTERS_WEIGHTS.keys())
         weights = list(N_FIGHTERS_WEIGHTS.values())
         n_fighters = rng.choices(options, weights=weights, k=1)[0]
 
-    fighters = rng.sample(WEAPON_POOL, n_fighters)
+    fighters = [dict(f) for f in rng.sample(WEAPON_POOL, n_fighters)]
+    _boost_color_contrast(fighters, rng)
     base_radius = RADIUS_BY_N[n_fighters]
     icon_size = ICON_SIZE_BY_N[n_fighters]
 
@@ -595,10 +652,11 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         orad2 = spawn_r * rng.uniform(0.55, 0.8)
         obstacles.append((center_x + math.cos(math.radians(oang2)) * orad2, center_y + math.sin(math.radians(oang2)) * orad2))
     OBSTACLE_COLLISION_TYPE = 99  # distinct from walls (0) and fighters (1..4)
+    obs_phys = _OBSTACLE_PHYSICS.get(theme.get("obstacle_kind", "rock"), _OBSTACLE_PHYSICS["rock"])
     for (ox, oy) in obstacles:
         obs_shape = pymunk.Circle(space.static_body, obstacle_radius, offset=(ox, oy))
-        obs_shape.elasticity = 1.0
-        obs_shape.friction = 0.0
+        obs_shape.elasticity = obs_phys["elasticity"]
+        obs_shape.friction = obs_phys["friction"]
         obs_shape.collision_type = OBSTACLE_COLLISION_TYPE
         space.add(obs_shape)
 
@@ -628,8 +686,13 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         impulse = arbiter.total_impulse.length
         base = min(24.0, max(2.5, impulse * 0.028))
         p1, p2 = fighters[i1]["power"], fighters[i2]["power"]
-        d1 = base * (p2 / p1) * rng.uniform(0.82, 1.18)
-        d2 = base * (p1 / p2) * rng.uniform(0.82, 1.18)
+        # A weapon's own spin adds extra bite to the hit it lands — a
+        # chainsaw or shuriken caught mid-spin cuts harder than one moving
+        # with the same impulse but no rotation.
+        spin1 = min(0.35, abs(bodies[i1].angular_velocity) * 0.035)
+        spin2 = min(0.35, abs(bodies[i2].angular_velocity) * 0.035)
+        d1 = base * (p2 / p1) * (1.0 + spin2) * rng.uniform(0.82, 1.18)
+        d2 = base * (p1 / p2) * (1.0 + spin1) * rng.uniform(0.82, 1.18)
         hp[i1] = max(0.0, hp[i1] - d1)
         hp[i2] = max(0.0, hp[i2] - d2)
 
