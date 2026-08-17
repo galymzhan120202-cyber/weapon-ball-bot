@@ -18,24 +18,24 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # --- Weapon roster -----------------------------------------------------
 
 WEAPON_POOL = [
-    {"name": "Sword", "kind": "sword", "color": (225, 225, 232), "power": 1.00},
-    {"name": "Katana", "kind": "katana", "color": (240, 240, 248), "power": 1.02},
-    {"name": "Axe", "kind": "axe", "color": (214, 92, 68), "power": 1.15},
-    {"name": "Hammer", "kind": "hammer", "color": (150, 150, 160), "power": 1.28},
-    {"name": "Warhammer", "kind": "warhammer", "color": (120, 130, 150), "power": 1.38},
-    {"name": "Spear", "kind": "spear", "color": (96, 206, 148), "power": 0.92},
-    {"name": "Trident", "kind": "trident", "color": (70, 190, 210), "power": 0.98},
-    {"name": "Dagger", "kind": "dagger", "color": (236, 205, 70), "power": 0.78},
-    {"name": "Kunai", "kind": "kunai", "color": (200, 200, 210), "power": 0.72},
-    {"name": "Mace", "kind": "mace", "color": (176, 100, 214), "power": 1.22},
-    {"name": "Flail", "kind": "flail", "color": (210, 140, 60), "power": 1.30},
-    {"name": "Nunchaku", "kind": "nunchaku", "color": (140, 90, 50), "power": 0.85},
-    {"name": "Whip", "kind": "whip", "color": (180, 60, 60), "power": 0.70},
-    {"name": "Scythe", "kind": "scythe", "color": (72, 190, 226), "power": 1.08},
-    {"name": "Claws", "kind": "claws", "color": (230, 230, 235), "power": 0.88},
-    {"name": "Chainsaw", "kind": "chainsaw", "color": (230, 190, 40), "power": 1.35},
-    {"name": "Staff", "kind": "staff", "color": (170, 130, 220), "power": 0.80},
-    {"name": "Shuriken", "kind": "shuriken", "color": (210, 60, 90), "power": 0.75},
+    {"name": "Sword", "kind": "sword", "color": (225, 225, 232), "power": 1.00, "material": "metal"},
+    {"name": "Katana", "kind": "katana", "color": (240, 240, 248), "power": 1.02, "material": "metal"},
+    {"name": "Axe", "kind": "axe", "color": (214, 92, 68), "power": 1.15, "material": "metal"},
+    {"name": "Hammer", "kind": "hammer", "color": (150, 150, 160), "power": 1.28, "material": "blunt"},
+    {"name": "Warhammer", "kind": "warhammer", "color": (120, 130, 150), "power": 1.38, "material": "blunt"},
+    {"name": "Spear", "kind": "spear", "color": (96, 206, 148), "power": 0.92, "material": "metal"},
+    {"name": "Trident", "kind": "trident", "color": (70, 190, 210), "power": 0.98, "material": "metal"},
+    {"name": "Dagger", "kind": "dagger", "color": (236, 205, 70), "power": 0.78, "material": "metal"},
+    {"name": "Kunai", "kind": "kunai", "color": (200, 200, 210), "power": 0.72, "material": "metal"},
+    {"name": "Mace", "kind": "mace", "color": (176, 100, 214), "power": 1.22, "material": "blunt"},
+    {"name": "Flail", "kind": "flail", "color": (210, 140, 60), "power": 1.30, "material": "blunt"},
+    {"name": "Nunchaku", "kind": "nunchaku", "color": (140, 90, 50), "power": 0.85, "material": "wood"},
+    {"name": "Whip", "kind": "whip", "color": (180, 60, 60), "power": 0.70, "material": "whip"},
+    {"name": "Scythe", "kind": "scythe", "color": (72, 190, 226), "power": 1.08, "material": "metal"},
+    {"name": "Claws", "kind": "claws", "color": (230, 230, 235), "power": 0.88, "material": "metal"},
+    {"name": "Chainsaw", "kind": "chainsaw", "color": (230, 190, 40), "power": 1.35, "material": "mechanical"},
+    {"name": "Staff", "kind": "staff", "color": (170, 130, 220), "power": 0.80, "material": "wood"},
+    {"name": "Shuriken", "kind": "shuriken", "color": (210, 60, 90), "power": 0.75, "material": "metal"},
 ]
 
 WOOD = (110, 74, 40)
@@ -333,7 +333,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 
         cps = arbiter.contact_point_set.points
         cx, cy = (cps[0].point_a.x, cps[0].point_a.y) if cps else (bodies[i1].position.x, bodies[i1].position.y)
-        hit_log.append((step_counter["n"], cx, cy, round(d1 + d2)))
+        hit_log.append((step_counter["n"], cx, cy, round(d1 + d2), i1, i2))
         return True
 
     space.on_collision(post_solve=on_hit)
@@ -392,8 +392,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             frame_idx += 1
 
         if hit_log and hit_log[-1][0] == step_counter["n"]:
-            _, hx, hy, dmg = hit_log[-1]
-            hit_frame_flags[frame_idx - 1] = (hx, hy, dmg)
+            _, hx, hy, dmg, hi1, hi2 = hit_log[-1]
+            hit_frame_flags[frame_idx - 1] = (hx, hy, dmg, hi1, hi2)
 
         for i in range(n_fighters):
             if alive[i] and hp[i] <= 0:
@@ -555,6 +555,30 @@ def build_battle_clip(battle):
     replay_focus = battle.get("replay_focus") or (w / 2, h / 2)
     REPLAY_ZOOM = 1.18
 
+    # Gentle continuous "camera" for the main fight: a slow, heavily-smoothed
+    # pan/zoom toward wherever the action currently is, instead of a static
+    # wide shot for the whole fight. Precomputed once (not per make_frame
+    # call) via an EMA over the alive fighters' centroid, since moviepy may
+    # call make_frame out of order and a per-call running average wouldn't
+    # be safe.
+    MAIN_ZOOM = 1.07
+    CAMERA_SMOOTH = 0.05
+    HUD_MARGIN = int(h * 0.20)  # title + HP bar row always stays crisp/un-zoomed
+    camera_centers = []
+    _prev_center = None
+    for fr in frames:
+        alive_xy = [fr["pos"][i][:2] for i in range(n) if fr["alive"][i]] or [fr["pos"][i][:2] for i in range(n)]
+        cx = sum(p[0] for p in alive_xy) / len(alive_xy)
+        cy = sum(p[1] for p in alive_xy) / len(alive_xy)
+        if _prev_center is None:
+            _prev_center = (cx, cy)
+        else:
+            _prev_center = (
+                _prev_center[0] + CAMERA_SMOOTH * (cx - _prev_center[0]),
+                _prev_center[1] + CAMERA_SMOOTH * (cy - _prev_center[1]),
+            )
+        camera_centers.append(_prev_center)
+
     theme = pick_arena_theme(battle.get("seed", 0))
     ambient_particles = _make_ambient_particles(battle.get("seed", 0), 16, w, h)
 
@@ -629,7 +653,7 @@ def build_battle_clip(battle):
             for hi in range(max(0, idx - 10), idx + 1):
                 if hi not in battle["hit_frame_flags"]:
                     continue
-                hx, hy, dmg = battle["hit_frame_flags"][hi]
+                hx, hy, dmg, _, _ = battle["hit_frame_flags"][hi]
                 age = idx - hi
                 if age <= 4:
                     a = max(0, int(230 * (1 - age / 4.0)))
@@ -739,6 +763,17 @@ def build_battle_clip(battle):
             rtxt = "REPLAY"
             rw = d3.textlength(rtxt, font=replay_font)
             d3.text((w / 2 - rw / 2, h * 0.185), rtxt, font=replay_font, fill=(255, 255, 255, int(255 * pulse)), stroke_width=3, stroke_fill=(200, 30, 30, 255))
+        elif not in_intro:
+            # Zoom/pan only the arena region — the title + HP bar strip above
+            # it is pasted back untouched so it never gets cropped or blurred
+            # by the camera drift.
+            fx, fy = camera_centers[idx]
+            region_h = h - HUD_MARGIN
+            crop_w, crop_h = w / MAIN_ZOOM, region_h / MAIN_ZOOM
+            cx0 = min(max(0.0, fx - crop_w / 2), w - crop_w)
+            cy0 = min(max(HUD_MARGIN, fy - crop_h / 2), h - crop_h)
+            sub = img.crop((int(cx0), int(cy0), int(cx0 + crop_w), int(cy0 + crop_h))).resize((w, region_h), Image.BICUBIC)
+            img.paste(sub, (0, HUD_MARGIN))
 
         arr = np.array(img.convert("RGB"))
         if shake_dx or shake_dy:
@@ -755,7 +790,7 @@ def build_battle_clip(battle):
 SR = 44100
 
 
-def _clang(intensity):
+def _clang_metal(intensity):
     intensity = max(0.15, min(1.0, intensity))
     dur = 0.18 + 0.05 * intensity
     n = int(SR * dur)
@@ -766,6 +801,79 @@ def _clang(intensity):
     noise = (np.random.default_rng(int(intensity * 1000)).uniform(-1, 1, n)) * np.exp(-t * 45)
     sfx = (tone * 0.75 + noise * 0.5) * env * intensity
     return sfx.astype(np.float32)
+
+
+def _thud_blunt(intensity):
+    """Heavy weapons (hammer, mace, flail...): low-pitched boom, more punch,
+    almost no metallic ring."""
+    intensity = max(0.15, min(1.0, intensity))
+    dur = 0.22 + 0.05 * intensity
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.exp(-t * (13 - 4 * intensity))
+    tone = sum(np.sin(2 * np.pi * f * t) for f in (85, 135)) / 2
+    punch = np.sin(2 * np.pi * 55 * t) * np.exp(-t * 55)
+    noise = np.random.default_rng(int(intensity * 777)).uniform(-1, 1, n) * np.exp(-t * 35) * 0.3
+    sfx = (tone * 0.6 + punch * 0.55 + noise) * env * intensity
+    return sfx.astype(np.float32)
+
+
+def _clack_wood(intensity):
+    """Nunchaku/staff: short, dry mid-frequency knock."""
+    intensity = max(0.15, min(1.0, intensity))
+    dur = 0.10 + 0.02 * intensity
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.exp(-t * 42)
+    tone = sum(np.sin(2 * np.pi * f * t) for f in (600, 950)) / 2
+    sfx = tone * env * intensity
+    return sfx.astype(np.float32)
+
+
+def _crack_whip(intensity):
+    """Whip: very short broadband snap, almost no tonal body."""
+    intensity = max(0.15, min(1.0, intensity))
+    dur = 0.08
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.exp(-t * 70)
+    noise = np.random.default_rng(int(intensity * 333)).uniform(-1, 1, n)
+    snap = np.sin(2 * np.pi * 3200 * t) * np.exp(-t * 160)
+    sfx = (noise * 0.8 + snap * 0.5) * env * intensity
+    return sfx.astype(np.float32)
+
+
+def _buzz_mechanical(intensity):
+    """Chainsaw: a short grinding buzz instead of a single impact."""
+    intensity = max(0.15, min(1.0, intensity))
+    dur = 0.20 + 0.04 * intensity
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.exp(-t * 9)
+    buzz = np.sign(np.sin(2 * np.pi * 140 * t)) * 0.5
+    grind = np.sin(2 * np.pi * 260 * t) * 0.3
+    noise = np.random.default_rng(int(intensity * 555)).uniform(-1, 1, n) * 0.45
+    sfx = (buzz + grind + noise) * env * intensity
+    return sfx.astype(np.float32)
+
+
+MATERIAL_SFX = {
+    "metal": _clang_metal,
+    "blunt": _thud_blunt,
+    "wood": _clack_wood,
+    "whip": _crack_whip,
+    "mechanical": _buzz_mechanical,
+}
+
+
+def _hit_sound(material_a, material_b, intensity):
+    a = MATERIAL_SFX.get(material_a, _clang_metal)(intensity)
+    b = MATERIAL_SFX.get(material_b, _clang_metal)(intensity)
+    n = max(len(a), len(b))
+    out = np.zeros(n, dtype=np.float32)
+    out[: len(a)] += a * (0.75 if material_a != material_b else 1.0)
+    out[: len(b)] += b * (0.75 if material_a != material_b else 1.0)
+    return out
 
 
 def _victory_chime():
@@ -822,12 +930,15 @@ def build_sfx_array(battle):
         _add(i * quarter, _beep(700, 0.10, 0.55))
     _add(3 * quarter, _fight_horn())
 
-    dmgs = [dmg for (_, _, dmg) in battle["hit_frame_flags"].values()]
+    fighters = battle["fighters"]
+    dmgs = [dmg for (_, _, dmg, _, _) in battle["hit_frame_flags"].values()]
     max_dmg = max(dmgs) if dmgs else 1.0
 
-    for frame_idx, (_, _, dmg) in battle["hit_frame_flags"].items():
+    for frame_idx, (_, _, dmg, i1, i2) in battle["hit_frame_flags"].items():
         t = INTRO_SECONDS + frame_idx / fps
-        _add(t, _clang(dmg / max(1.0, max_dmg)))
+        mat_a = fighters[i1]["material"]
+        mat_b = fighters[i2]["material"]
+        _add(t, _hit_sound(mat_a, mat_b, dmg / max(1.0, max_dmg)))
 
     finale_t = INTRO_SECONDS + battle["finale_start"] / fps
     _add(finale_t, _victory_chime(), vol=0.9)
