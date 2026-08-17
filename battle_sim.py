@@ -258,10 +258,22 @@ def _draw_icon_shape(kind, color, size=170):
     return img
 
 
-def _polish_icon(icon):
-    """Outline + drop shadow + diagonal light/dark shading, applied once per
-    icon (not per frame) so any flat silhouette reads as a solid 3D object
-    and pops against a busy arena background."""
+_MATERIAL_POLISH = {
+    "metal": {"sheen": 95, "hi_peak": 170, "hi_width": 6.0, "hi_blur": 1.2, "rim": 190, "shadow": 0.60},
+    "mechanical": {"sheen": 95, "hi_peak": 170, "hi_width": 6.0, "hi_blur": 1.2, "rim": 190, "shadow": 0.60},
+    "wood": {"sheen": 35, "hi_peak": 40, "hi_width": 6.0, "hi_blur": 2.0, "rim": 90, "shadow": 0.55},
+    "blunt": {"sheen": 70, "hi_peak": 110, "hi_width": 3.5, "hi_blur": 2.6, "rim": 150, "shadow": 0.68},
+    "whip": {"sheen": 50, "hi_peak": 60, "hi_width": 5.0, "hi_blur": 1.8, "rim": 100, "shadow": 0.55},
+}
+
+
+def _polish_icon(icon, material="metal"):
+    """Outline + drop shadow + diagonal light/dark shading + a material-
+    tuned specular streak and rim-light, applied once per icon (not per
+    frame) so any flat silhouette reads as a solid 3D object of the right
+    finish (shiny metal vs matte wood vs dull stone) and pops against a
+    busy arena background."""
+    cfg = _MATERIAL_POLISH.get(material, _MATERIAL_POLISH["metal"])
     w, h = icon.size
     alpha = icon.split()[3]
     alpha_np = np.asarray(alpha, dtype=np.float32) / 255.0
@@ -269,7 +281,7 @@ def _polish_icon(icon):
     result = Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
     # drop shadow: blurred + darkened silhouette, offset down-right
-    shadow_alpha = alpha.filter(ImageFilter.GaussianBlur(4)).point(lambda p: int(p * 0.6))
+    shadow_alpha = alpha.filter(ImageFilter.GaussianBlur(4)).point(lambda p: int(p * cfg["shadow"]))
     shadow = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     shadow.putalpha(shadow_alpha)
     shifted_shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -290,7 +302,7 @@ def _polish_icon(icon):
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     grad = np.clip(1.0 - (xx + yy) / (w + h), 0.0, 1.0) ** 1.4
 
-    sheen_a = (grad * 95 * alpha_np).astype(np.uint8)
+    sheen_a = (grad * cfg["sheen"] * alpha_np).astype(np.uint8)
     sheen = Image.new("RGBA", (w, h), (255, 255, 255, 0))
     sheen.putalpha(Image.fromarray(sheen_a, mode="L"))
     result.alpha_composite(sheen)
@@ -300,22 +312,30 @@ def _polish_icon(icon):
     shade.putalpha(Image.fromarray(shade_a, mode="L"))
     result.alpha_composite(shade)
 
-    # tight glossy specular streak — narrower and brighter than the broad
-    # sheen above, so metal/wood alike pick up a "rendered" highlight
-    # instead of reading as flat cartoon fill.
+    # specular streak — narrower/brighter for glossy materials (metal),
+    # wider/softer for matte ones (wood, blunt stone heads).
     diag = (xx + yy) / (w + h)
-    band = np.clip(1.0 - np.abs(diag - 0.26) * 6.0, 0.0, 1.0) ** 2
-    highlight_a = (band * 170 * alpha_np).astype(np.uint8)
+    band = np.clip(1.0 - np.abs(diag - 0.26) * cfg["hi_width"], 0.0, 1.0) ** 2
+    highlight_a = (band * cfg["hi_peak"] * alpha_np).astype(np.uint8)
     highlight = Image.new("RGBA", (w, h), (255, 255, 255, 0))
     highlight.putalpha(Image.fromarray(highlight_a, mode="L"))
-    highlight = highlight.filter(ImageFilter.GaussianBlur(1.2))
+    highlight = highlight.filter(ImageFilter.GaussianBlur(cfg["hi_blur"]))
     result.alpha_composite(highlight)
+
+    # rim light: a thin bright edge along the lit (top-left) side of the
+    # silhouette only, like light catching the edge of the object.
+    eroded = alpha.filter(ImageFilter.MinFilter(3))
+    ring = np.clip(np.asarray(alpha, dtype=np.float32) - np.asarray(eroded, dtype=np.float32), 0, 255) / 255.0
+    rim_a = (ring * np.clip(grad, 0.0, 1.0) * cfg["rim"]).astype(np.uint8)
+    rim = Image.new("RGBA", (w, h), (255, 255, 255, 0))
+    rim.putalpha(Image.fromarray(rim_a, mode="L"))
+    result.alpha_composite(rim)
 
     return result
 
 
-def make_icon(kind, color, size=170):
-    return _polish_icon(_draw_icon_shape(kind, color, size))
+def make_icon(kind, color, size=170, material="metal"):
+    return _polish_icon(_draw_icon_shape(kind, color, size), material)
 
 
 def make_obstacle_icon(radius_px, accent_color):
@@ -776,7 +796,7 @@ def build_battle_clip(battle):
     left, top, right, bottom = battle["arena"]
     finale_start = battle["finale_start"]
 
-    icons = [make_icon(f["kind"], f["color"], icon_size) for f in fighters]
+    icons = [make_icon(f["kind"], f["color"], icon_size, f["material"]) for f in fighters]
     ko_frame_by_idx = {i: frame for (frame, i, _, _) in battle["ko_events"]}
     first_hit_frame = min(battle["hit_frame_flags"].keys()) if battle["hit_frame_flags"] else None
     FIRST_BLOOD_FRAMES = int(fps * 0.9)
@@ -1360,8 +1380,8 @@ def generate_thumbnail(battle, output_path, w=1280, h=720):
 
     if n == 2:
         icon_size = int(h * 0.66)
-        left_icon = make_icon(fighters[0]["kind"], fighters[0]["color"], icon_size).rotate(18, resample=Image.BICUBIC, expand=True)
-        right_icon = make_icon(fighters[1]["kind"], fighters[1]["color"], icon_size).rotate(-18, resample=Image.BICUBIC, expand=True)
+        left_icon = make_icon(fighters[0]["kind"], fighters[0]["color"], icon_size, fighters[0]["material"]).rotate(18, resample=Image.BICUBIC, expand=True)
+        right_icon = make_icon(fighters[1]["kind"], fighters[1]["color"], icon_size, fighters[1]["material"]).rotate(-18, resample=Image.BICUBIC, expand=True)
         img.alpha_composite(left_icon, (int(w * 0.03), int(h / 2 - left_icon.height / 2)))
         img.alpha_composite(right_icon, (int(w * 0.97 - right_icon.width), int(h / 2 - right_icon.height / 2)))
 
@@ -1372,7 +1392,7 @@ def generate_thumbnail(battle, output_path, w=1280, h=720):
         title_text = f"{fighters[0]['name']} vs {fighters[1]['name']}"
     else:
         icon_size = int(h * (0.42 if n == 3 else 0.36))
-        icons = [make_icon(f["kind"], f["color"], icon_size) for f in fighters]
+        icons = [make_icon(f["kind"], f["color"], icon_size, f["material"]) for f in fighters]
         gap = w * 0.02
         total_w = sum(ic.width for ic in icons) + gap * (n - 1)
         x = (w - total_w) / 2
