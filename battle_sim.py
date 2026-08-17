@@ -36,6 +36,10 @@ WEAPON_POOL = [
     {"name": "Chainsaw", "kind": "chainsaw", "color": (230, 190, 40), "power": 1.35, "material": "mechanical"},
     {"name": "Staff", "kind": "staff", "color": (170, 130, 220), "power": 0.80, "material": "wood"},
     {"name": "Shuriken", "kind": "shuriken", "color": (210, 60, 90), "power": 0.75, "material": "metal"},
+    {"name": "Rapier", "kind": "rapier", "color": (235, 235, 240), "power": 0.85, "material": "metal"},
+    {"name": "Halberd", "kind": "halberd", "color": (200, 100, 60), "power": 1.20, "material": "metal"},
+    {"name": "Cleaver", "kind": "cleaver", "color": (210, 90, 90), "power": 1.10, "material": "metal"},
+    {"name": "Boomerang", "kind": "boomerang", "color": (190, 140, 75), "power": 0.82, "material": "wood"},
 ]
 
 WOOD = (110, 74, 40)
@@ -226,6 +230,31 @@ def _draw_icon_shape(kind, color, size=170):
             pts.append((cx + math.cos(ang) * r, size / 2 + math.sin(ang) * r))
         img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(pts, fill=255), color), (0, 0))
         d.ellipse([cx - size * 0.06, size / 2 - size * 0.06, cx + size * 0.06, size / 2 + size * 0.06], fill=(40, 40, 44, 255))
+    elif kind == "rapier":
+        bw = size * 0.032
+        rapier_pts = [(cx, size * 0.03), (cx + bw, size * 0.62), (cx - bw, size * 0.62)]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(rapier_pts, fill=255), color), (0, 0))
+        _metal_fuller(d, (cx, size * 0.07), (cx, size * 0.58), max(1, int(bw * 0.5)), color)
+        d.polygon([(cx, size * 0.60), (cx + size * 0.10, size * 0.66), (cx, size * 0.72), (cx - size * 0.10, size * 0.66)], fill=(*STEEL, 255))
+        _wood_line(d, (cx, size * 0.72), (cx, size * 0.90), int(size * 0.035))
+        d.ellipse([cx - size * 0.045, size * 0.88, cx + size * 0.045, size * 0.96], fill=(*WOOD, 255))
+    elif kind == "halberd":
+        _wood_line(d, (cx, size * 0.97), (cx, size * 0.22), int(size * 0.05))
+        img.alpha_composite(_gradient_fill(size, lambda md: md.pieslice(
+            [cx - size * 0.06, size * 0.06, cx + size * 0.36, size * 0.38], start=195, end=345, fill=255), color), (0, 0))
+        spike_pts = [(cx, size * 0.02), (cx + size * 0.06, size * 0.22), (cx - size * 0.06, size * 0.22)]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(spike_pts, fill=255), color), (0, 0))
+    elif kind == "cleaver":
+        bw = size * 0.17
+        cleaver_pts = [(cx - bw, size * 0.10), (cx + bw, size * 0.10), (cx + bw * 0.75, size * 0.52), (cx - bw * 0.75, size * 0.52)]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(cleaver_pts, fill=255), color, angle_deg=20), (0, 0))
+        d.rectangle([cx - size * 0.10, size * 0.52, cx + size * 0.10, size * 0.58], fill=(*STEEL, 255))
+        _wood_line(d, (cx, size * 0.58), (cx, size * 0.86), int(size * 0.055))
+    elif kind == "boomerang":
+        arm1 = [(cx, size * 0.86), (cx - size * 0.34, size * 0.16), (cx - size * 0.22, size * 0.12), (cx + size * 0.03, size * 0.78)]
+        arm2 = [(cx, size * 0.86), (cx + size * 0.34, size * 0.16), (cx + size * 0.22, size * 0.12), (cx - size * 0.03, size * 0.78)]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(arm1, fill=255), color, angle_deg=140), (0, 0))
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(arm2, fill=255), color, angle_deg=40), (0, 0))
     return img
 
 
@@ -636,6 +665,12 @@ ARENA_THEMES = [
     {"name": "Sunset Coliseum", "top": (48, 16, 27), "bottom": (14, 4, 10), "grid": (255, 165, 125, 16), "border": (235, 125, 155, 255), "particle": (255, 175, 135)},
     {"name": "Volcanic Forge", "top": (30, 4, 4), "bottom": (8, 2, 2), "grid": (255, 90, 30, 20), "border": (255, 60, 20, 255), "particle": (255, 120, 40)},
     {"name": "Frozen Peak", "top": (10, 14, 34), "bottom": (3, 5, 12), "grid": (200, 220, 255, 18), "border": (170, 200, 250, 255), "particle": (220, 235, 255)},
+    {"name": "Golden Temple", "top": (40, 28, 4), "bottom": (12, 8, 1), "grid": (255, 210, 90, 20), "border": (240, 190, 70, 255), "particle": (255, 220, 130)},
+    {"name": "Storm Clouds", "top": (18, 20, 28), "bottom": (5, 6, 9), "grid": (170, 190, 220, 18), "border": (150, 175, 210, 255), "particle": (200, 215, 255)},
+    {"name": "Blood Moon", "top": (34, 3, 6), "bottom": (9, 1, 2), "grid": (220, 40, 50, 18), "border": (200, 30, 45, 255), "particle": (255, 70, 80)},
+    {"name": "Coral Reef", "top": (4, 30, 32), "bottom": (2, 8, 10), "grid": (100, 230, 210, 18), "border": (90, 220, 200, 255), "particle": (255, 130, 170)},
+    {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130)},
+    {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60)},
 ]
 
 
