@@ -1076,6 +1076,19 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 # every upload can look different with zero extra assets. Picked from a hash
 # of the battle seed, independent of the physics RNG stream.
 
+def _brighten_theme_color(rgb, sat_boost=1.3, val_boost=2.3, val_floor=0.10):
+    """Arena background colors were tuned as a very dark night-battle
+    backdrop — striking on their own, but the user wants the arenas to
+    read as "яркий" (vibrant/bright), not muted. Boosts saturation and
+    lifts brightness in HSV space (preserves hue, so each theme keeps its
+    identity) instead of hand-retuning 16 themes' worth of RGB tuples."""
+    h, s, v = colorsys.rgb_to_hsv(*(c / 255 for c in rgb))
+    s = min(1.0, s * sat_boost)
+    v = max(val_floor, min(1.0, v * val_boost + 0.04))
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
 ARENA_THEMES = [
     {"name": "Midnight Arena", "top": (14, 12, 26), "bottom": (4, 4, 10), "grid": (255, 255, 255, 12), "border": (90, 90, 110, 255), "particle": (150, 150, 210), "obstacle_kind": "rock", "particle_kind": "up", "impact_fx": "dust_ring", "edge_kind": "none"},
     {"name": "Neon City", "top": (42, 8, 52), "bottom": (10, 2, 16), "grid": (255, 70, 210, 20), "border": (210, 70, 230, 255), "particle": (255, 90, 220), "obstacle_kind": "tech_crate", "particle_kind": "up", "impact_fx": "spark_grid", "edge_kind": "circuit"},
@@ -1094,6 +1107,10 @@ ARENA_THEMES = [
     {"name": "Desert Dunes", "top": (38, 24, 10), "bottom": (12, 7, 3), "grid": (230, 180, 110, 16), "border": (220, 165, 95, 255), "particle": (255, 200, 130), "obstacle_kind": "sand_rock", "particle_kind": "sideways", "impact_fx": "dust_ring", "edge_kind": "horizon_silhouette"},
     {"name": "Radioactive Waste", "top": (14, 30, 2), "bottom": (4, 9, 1), "grid": (190, 255, 30, 22), "border": (170, 235, 20, 255), "particle": (210, 255, 60), "obstacle_kind": "tech_crate", "particle_kind": "still_pulse", "impact_fx": "spark_grid", "edge_kind": "circuit"},
 ]
+
+for _theme in ARENA_THEMES:
+    _theme["top"] = _brighten_theme_color(_theme["top"])
+    _theme["bottom"] = _brighten_theme_color(_theme["bottom"], val_boost=1.9)
 
 
 def pick_arena_theme(seed):
@@ -1384,7 +1401,7 @@ def build_battle_clip(battle):
     gdist = np.sqrt(((gx - light_x) / (w * 0.65)) ** 2 + ((gy - light_y) / (h * 0.5)) ** 2)
     glow_falloff = np.clip(1.0 - gdist, 0.0, 1.0) ** 2.2
     accent = np.array(theme["particle"], dtype=np.float32)
-    grad += glow_falloff[:, :, None] * accent[None, None, :] * 0.22
+    grad += glow_falloff[:, :, None] * accent[None, None, :] * 0.4
 
     base_bg = Image.fromarray(np.clip(grad, 0, 255).astype(np.uint8), mode="RGB")
 
@@ -1854,11 +1871,11 @@ def build_battle_clip(battle):
             img.paste(sub, (0, HUD_MARGIN))
 
         arr = np.array(img.convert("RGB")).astype(np.float32)
-        # Gentle saturation + contrast lift and the precomputed vignette —
-        # a gaming-content color grade instead of a flat unprocessed render.
+        # A punchier, "яркий" (vibrant) saturation + contrast lift and the
+        # precomputed vignette — a real color grade, not a flat render.
         gray = arr.mean(axis=-1, keepdims=True)
-        arr = gray + (arr - gray) * 1.12
-        arr = (arr - 128.0) * 1.06 + 128.0
+        arr = gray + (arr - gray) * 1.32
+        arr = (arr - 128.0) * 1.08 + 128.0
         arr *= vignette_mask
         arr = np.clip(arr, 0, 255).astype(np.uint8)
         if shake_dx or shake_dy:

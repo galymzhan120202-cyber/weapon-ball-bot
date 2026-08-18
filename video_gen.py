@@ -46,7 +46,7 @@ YOUTUBE_MADE_FOR_KIDS = os.getenv('YOUTUBE_MADE_FOR_KIDS', 'false').lower() == '
 
 VIDEO_CODEC = os.getenv('VIDEO_CODEC', 'libx264')
 AUDIO_CODEC = os.getenv('AUDIO_CODEC', 'aac')
-VIDEO_FPS = int(os.getenv('VIDEO_FPS', '24'))
+VIDEO_FPS = int(os.getenv('VIDEO_FPS', '60'))
 VIDEO_PRESET = os.getenv('VIDEO_PRESET', 'ultrafast')
 VIDEO_WIDTH = int(os.getenv('VIDEO_WIDTH', '1080'))
 VIDEO_HEIGHT = int(os.getenv('VIDEO_HEIGHT', '1920'))
