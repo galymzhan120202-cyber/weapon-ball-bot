@@ -125,6 +125,16 @@ def _metal_fuller(d, p1, p2, width, color):
     d.line([p1, p2], fill=(255, 255, 255, 90), width=max(1, int(width)))
 
 
+def _crescent_blade(md, cx, cy, outer_r, inner_r, offset):
+    """Draws a crescent-moon blade silhouette (two overlapping filled
+    circles, the second cut away) onto a mask — tapered tips top and
+    bottom, a convex outer cutting edge bulging out to one side. This is
+    what an axe/halberd/scythe blade actually needs; a plain symmetric
+    dome/pieslice reads as a mushroom or pickaxe head instead."""
+    md.ellipse([cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r], fill=255)
+    md.ellipse([cx - inner_r + offset, cy - inner_r, cx + inner_r + offset, cy + inner_r], fill=0)
+
+
 def _gradient_fill(size, shape_fn, color, angle_deg=115, light=1.5, dark=0.5):
     """Renders whatever shape_fn(mask_draw) fills solid onto a mask, then
     composites a directional light->dark gradient through that mask —
@@ -168,9 +178,10 @@ def _draw_icon_shape(kind, color, size=170):
         d.rectangle([cx - bw * 0.5, size * 0.62, cx + bw * 0.5, size * 0.85], fill=(*WOOD, 255))
         d.ellipse([cx - bw * 0.8, size * 0.83, cx + bw * 0.8, size * 0.93], fill=(*WOOD, 255))
     elif kind == "axe":
-        _wood_line(d, (cx - size * 0.16, size * 0.90), (cx + size * 0.14, size * 0.12), int(size * 0.055))
-        img.alpha_composite(_gradient_fill(size, lambda md: md.pieslice(
-            [cx - size * 0.06, size * 0.02, cx + size * 0.44, size * 0.42], start=195, end=345, fill=255), color), (0, 0))
+        _wood_line(d, (cx, size * 0.92), (cx, size * 0.20), int(size * 0.05))
+        bcx, bcy = cx + size * 0.09, size * 0.24
+        img.alpha_composite(_gradient_fill(size, lambda md: _crescent_blade(
+            md, bcx, bcy, size * 0.26, size * 0.20, size * 0.155), color), (0, 0))
     elif kind == "hammer":
         _wood_line(d, (cx, size * 0.90), (cx, size * 0.36), int(size * 0.07))
         img.alpha_composite(_gradient_fill(size, lambda md: md.rounded_rectangle(
@@ -196,10 +207,13 @@ def _draw_icon_shape(kind, color, size=170):
             y2 = size * 0.30 + math.sin(rad) * size * 0.25
             d.line([(cx, size * 0.30), (x2, y2)], fill=c, width=max(2, int(size * 0.025)))
     elif kind == "scythe":
-        _wood_line(d, (cx, size * 0.96), (cx, size * 0.30), int(size * 0.04))
-        arc_w = int(size * 0.07)
-        img.alpha_composite(_gradient_fill(size, lambda md: md.arc(
-            [cx - size * 0.36, size * 0.02, cx + size * 0.34, size * 0.52], start=200, end=340, fill=255, width=arc_w), color), (0, 0))
+        # A real scythe blade is a single asymmetric hook swept out to one
+        # side of the pole, not a symmetric dome (a symmetric arc reads as
+        # a pickaxe head instead — confirmed by viewer feedback).
+        _wood_line(d, (cx, size * 0.97), (cx, size * 0.28), int(size * 0.04))
+        scx, scy = cx + size * 0.12, size * 0.20
+        img.alpha_composite(_gradient_fill(size, lambda md: _crescent_blade(
+            md, scx, scy, size * 0.34, size * 0.28, size * 0.22), color), (0, 0))
     elif kind == "katana":
         bw = size * 0.06
         katana_pts = [
@@ -299,9 +313,10 @@ def _draw_icon_shape(kind, color, size=170):
         d.ellipse([cx - size * 0.045, size * 0.88, cx + size * 0.045, size * 0.96], fill=(*WOOD, 255))
     elif kind == "halberd":
         _wood_line(d, (cx, size * 0.97), (cx, size * 0.22), int(size * 0.05))
-        img.alpha_composite(_gradient_fill(size, lambda md: md.pieslice(
-            [cx - size * 0.06, size * 0.06, cx + size * 0.36, size * 0.38], start=195, end=345, fill=255), color), (0, 0))
-        spike_pts = [(cx, size * 0.02), (cx + size * 0.06, size * 0.22), (cx - size * 0.06, size * 0.22)]
+        hbcx, hbcy = cx + size * 0.07, size * 0.24
+        img.alpha_composite(_gradient_fill(size, lambda md: _crescent_blade(
+            md, hbcx, hbcy, size * 0.20, size * 0.155, size * 0.12), color), (0, 0))
+        spike_pts = [(cx, size * 0.02), (cx + size * 0.06, size * 0.14), (cx - size * 0.06, size * 0.14)]
         img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(spike_pts, fill=255), color), (0, 0))
     elif kind == "cleaver":
         bw = size * 0.17
