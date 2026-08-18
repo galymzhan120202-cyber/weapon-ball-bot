@@ -1371,10 +1371,22 @@ def build_battle_clip(battle):
     obstacle_radius = battle.get("obstacle_radius", 0)
     obstacle_icon = make_obstacle_icon(obstacle_radius, theme["border"][:3], theme.get("obstacle_kind", "rock")) if obstacles else None
 
-    grad = np.zeros((h, w, 3), dtype=np.uint8)
+    grad = np.zeros((h, w, 3), dtype=np.float32)
     for ch in range(3):
-        grad[:, :, ch] = np.linspace(theme["top"][ch], theme["bottom"][ch], h).astype(np.uint8)[:, None]
-    base_bg = Image.fromarray(grad, mode="RGB")
+        grad[:, :, ch] = np.linspace(theme["top"][ch], theme["bottom"][ch], h).astype(np.float32)[:, None]
+
+    # Atmospheric depth: a soft radial glow from a light source near the
+    # top of the arena, tinted with the theme's own accent color — turns
+    # the flat top-to-bottom band into something with real depth instead
+    # of one uniform gradient across the whole width.
+    gy, gx = np.mgrid[0:h, 0:w].astype(np.float32)
+    light_x, light_y = w * 0.5, h * 0.16
+    gdist = np.sqrt(((gx - light_x) / (w * 0.65)) ** 2 + ((gy - light_y) / (h * 0.5)) ** 2)
+    glow_falloff = np.clip(1.0 - gdist, 0.0, 1.0) ** 2.2
+    accent = np.array(theme["particle"], dtype=np.float32)
+    grad += glow_falloff[:, :, None] * accent[None, None, :] * 0.22
+
+    base_bg = Image.fromarray(np.clip(grad, 0, 255).astype(np.uint8), mode="RGB")
 
     title_text = " vs ".join(f["name"] for f in fighters)
     n_frames = len(frames)
