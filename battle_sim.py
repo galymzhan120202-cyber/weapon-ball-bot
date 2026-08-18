@@ -598,7 +598,7 @@ START_HP = 100.0
 # Fewer fighters = bigger icons/hitboxes; more fighters = smaller, so a 4-way
 # melee doesn't turn into an unreadable pile in the same arena footprint.
 RADIUS_BY_N = {2: 71.4, 3: 60.0, 4: 52.0}
-ICON_SIZE_BY_N = {2: 170, 3: 146, 4: 126}
+ICON_SIZE_BY_N = {2: 190, 3: 164, 4: 141}
 
 # How often a video is a 1v1 duel vs a 3-way / 4-way melee.
 N_FIGHTERS_WEIGHTS = {2: 55, 3: 28, 4: 17}
@@ -1304,6 +1304,11 @@ def build_battle_clip(battle):
     finale_start = battle["finale_start"]
 
     icons = [make_icon(f["kind"], f["color"], icon_size, f["material"]) for f in fighters]
+    # A softly blurred copy for the motion trail — three sharp, fully-detailed
+    # duplicate icons behind a fast-moving weapon read as "extra weapons"
+    # rather than a speed blur and hurt readability, especially on small
+    # ones like Dagger. A blurred ghost reads as motion, not a duplicate.
+    trail_icons = [icon.filter(ImageFilter.GaussianBlur(icon_size * 0.035)) for icon in icons]
     ko_frame_by_idx = {i: frame for (frame, i, _, _) in battle["ko_events"]}
     first_hit_frame = min(battle["hit_frame_flags"].keys()) if battle["hit_frame_flags"] else None
     FIRST_BLOOD_FRAMES = int(fps * 0.9)
@@ -1375,7 +1380,7 @@ def build_battle_clip(battle):
     n_frames = len(frames)
 
     intro_frames = int(INTRO_SECONDS * fps)
-    TRAIL_STEPS = ((3, 90), (6, 55), (9, 25))  # (frames back, alpha)
+    TRAIL_STEPS = ((3, 65), (7, 28))  # (frames back, alpha) — kept short/faint
     KO_FADE_FRAMES = 12
 
     def _det_jitter(nn):
@@ -1611,7 +1616,7 @@ def build_battle_clip(battle):
                 for i in range(n):
                     if not hst["alive"][i]:
                         continue
-                    ghost = _tinted(icons[i], al / 255)
+                    ghost = _tinted(trail_icons[i], al / 255)
                     x, y, ang = hst["pos"][i]
                     ghost = ghost.rotate(-ang, resample=Image.BICUBIC)
                     img.alpha_composite(ghost, (int(x - icon_size / 2), int(y - icon_size / 2)))
