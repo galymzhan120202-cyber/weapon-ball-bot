@@ -42,6 +42,7 @@ WEAPON_POOL = [
     {"name": "Halberd", "kind": "halberd", "color": (200, 100, 60), "power": 1.20, "material": "metal"},
     {"name": "Cleaver", "kind": "cleaver", "color": (210, 90, 90), "power": 1.10, "material": "metal"},
     {"name": "Boomerang", "kind": "boomerang", "color": (190, 140, 75), "power": 0.82, "material": "wood"},
+    {"name": "Pistol", "kind": "pistol", "color": (70, 70, 78), "power": 0.74, "material": "metal"},
 ]
 
 # Physical collision-radius multiplier per weapon kind, independent of the
@@ -55,7 +56,7 @@ WEAPON_REACH = {
     "spear": 1.25, "trident": 1.22, "dagger": 0.72, "kunai": 0.70, "mace": 0.85,
     "flail": 0.95, "nunchaku": 0.90, "whip": 1.30, "scythe": 1.15, "claws": 0.75,
     "chainsaw": 1.00, "staff": 1.20, "shuriken": 0.65, "rapier": 1.15,
-    "halberd": 1.25, "cleaver": 0.85, "boomerang": 0.90,
+    "halberd": 1.25, "cleaver": 0.85, "boomerang": 0.90, "pistol": 0.80,
 }
 
 # Per-material collision feel: metal stays crisp/springy (near-elastic,
@@ -232,6 +233,11 @@ def _draw_icon_shape(kind, color, size=170):
         img.alpha_composite(_gradient_fill(size, lambda md: md.rounded_rectangle(
             [cx - size * 0.30, size * 0.06, cx + size * 0.30, size * 0.44], radius=int(size * 0.06), fill=255), color), (0, 0))
         d.rounded_rectangle([cx - size * 0.30, size * 0.06, cx + size * 0.30, size * 0.44], radius=int(size * 0.06), outline=(40, 40, 44, 255), width=3)
+        # back spike — the classic warhammer detail (flat striking face on
+        # one side, a piercing spike on the other) that keeps its silhouette
+        # from reading as just a bigger plain Hammer.
+        spike_pts = [(cx + size * 0.30, size * 0.19), (cx + size * 0.48, size * 0.25), (cx + size * 0.30, size * 0.31)]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(spike_pts, fill=255), color), (0, 0))
     elif kind == "trident":
         _wood_line(d, (cx, size * 0.96), (cx, size * 0.22), int(size * 0.045))
         for off in (-0.16, 0, 0.16):
@@ -329,6 +335,17 @@ def _draw_icon_shape(kind, color, size=170):
         arm2 = [(cx, size * 0.86), (cx + size * 0.34, size * 0.16), (cx + size * 0.22, size * 0.12), (cx - size * 0.03, size * 0.78)]
         img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(arm1, fill=255), color, angle_deg=140), (0, 0))
         img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(arm2, fill=255), color, angle_deg=40), (0, 0))
+    elif kind == "pistol":
+        # Barrel points up (this file's "tip = -Y" convention), grip angles
+        # back down — a compact sidearm silhouette instead of a big blade.
+        barrel_pts = [(cx - size * 0.05, size * 0.10), (cx + size * 0.05, size * 0.10),
+                      (cx + size * 0.05, size * 0.40), (cx - size * 0.05, size * 0.40)]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(barrel_pts, fill=255), color), (0, 0))
+        grip_pts = [(cx - size * 0.04, size * 0.38), (cx + size * 0.11, size * 0.38),
+                    (cx + size * 0.19, size * 0.72), (cx + size * 0.01, size * 0.76)]
+        img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(grip_pts, fill=255), color), (0, 0))
+        d.rectangle([cx - size * 0.05, size * 0.35, cx + size * 0.15, size * 0.41], fill=(20, 20, 24, 255))
+        d.ellipse([cx - size * 0.045, size * 0.11, cx + size * 0.045, size * 0.16], fill=(15, 15, 18, 255))
     return img
 
 
@@ -636,7 +653,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     # power ~1.4) physically shrugs off a hit that sends a light one (Dagger,
     # power ~0.8) flying — the collision itself feels like weight, not just
     # the HP number ticking down.
-    bodies, shapes = [], []
+    bodies, shapes, fighter_radii = [], [], []
     # Flail/nunchaku/whip are chain/flexible weapons in concept — give each
     # one a tiny second body with NO collision shape (so it can never affect
     # damage/hit detection) tethered to the main body by a soft DampedSpring.
@@ -647,6 +664,13 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     CHAIN_WEAPON_KINDS = {"flail", "nunchaku", "whip"}
     chain_bodies = [None] * n_fighters
     chain_springs = [None] * n_fighters
+    # Long, straight-bodied weapons get a second small collision circle out
+    # at their drawn tip instead of just a bigger single circle centered on
+    # the icon — true reach along the direction the weapon is facing, not
+    # just a larger blob. Chain weapons (whip/nunchaku/flail) already get
+    # their own reach-like swing from the DampedSpring head above, so they
+    # aren't included here.
+    REACH_TIP_KINDS = {"spear", "trident", "halberd", "staff", "scythe", "rapier"}
     for i in range(n_fighters):
         ang = math.radians(angle_offset + i * 360 / n_fighters)
         x = center_x + math.cos(ang) * spawn_r
@@ -660,6 +684,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         )
         bodies.append(body)
         shapes.append(shape)
+        fighter_radii.append(fighter_radius)
 
         if fighters[i]["kind"] in CHAIN_WEAPON_KINDS:
             chain_len = fighter_radius * 0.55
@@ -670,6 +695,42 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             space.add(spring)
             chain_bodies[i] = head_body
             chain_springs[i] = spring
+
+        if fighters[i]["kind"] in REACH_TIP_KINDS:
+            # A second, smaller collision circle offset toward the icon's
+            # drawn tip (local (0, -offset) — the icon's tip sits at small-y
+            # in its own unrotated canvas, and pymunk's body-local rotation
+            # convention matches the render's icon.rotate(-angle) exactly,
+            # so this offset swings with the body and stays over the visible
+            # blade tip at any rotation). Same collision_type as the main
+            # body, so damage attribution is unaffected — it's purely an
+            # extra place a long weapon can actually land a hit from.
+            tip_offset = fighter_radius * 0.4
+            tip_shape = pymunk.Circle(body, fighter_radius * 0.32, offset=(0, -tip_offset))
+            tip_shape.elasticity = phys["elasticity"]
+            tip_shape.friction = phys["friction"]
+            tip_shape.collision_type = i + 1
+            space.add(tip_shape)
+
+    # Pistol: the one ranged weapon in the roster. It still has a normal
+    # melee circle above (bounces/gets hit like everyone else) but also
+    # periodically fires a small fast projectile at a random living
+    # opponent — a genuinely separate subsystem (its own collision type,
+    # its own damage path, single-use/despawns on any hit or timeout)
+    # layered on top of the existing per-fighter melee model rather than
+    # replacing it.
+    PROJECTILE_COLLISION_TYPE = 150
+    PROJECTILE_SPEED = speed0 * 2.4
+    PROJECTILE_RADIUS = min(w, h) * 0.007
+    PISTOL_FIRE_MIN_STEPS = int(1.4 * PHYSICS_HZ)
+    PISTOL_FIRE_MAX_STEPS = int(2.0 * PHYSICS_HZ)
+    PROJECTILE_LIFE_STEPS = int(1.4 * PHYSICS_HZ)
+    projectiles = []  # each: {"body", "shape", "shooter"}
+    to_remove_projectiles = []
+    next_fire_step = [
+        rng.randint(PISTOL_FIRE_MIN_STEPS, PISTOL_FIRE_MAX_STEPS) if fighters[i]["kind"] == "pistol" else None
+        for i in range(n_fighters)
+    ]
 
     pts = [(left_arena, top_arena), (right_arena, top_arena), (right_arena, bottom_arena), (left_arena, bottom_arena)]
     for i in range(4):
@@ -715,10 +776,28 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     # flash on every single touch.
     WALL_FLASH_COOLDOWN_STEPS = int(0.5 * PHYSICS_HZ)
     last_wall_flash_step = [-WALL_FLASH_COOLDOWN_STEPS] * n_fighters
+    muzzle_flash_log = []  # (step_index, x, y, angle_deg)
+    projectile_hit_log = []  # (step_index, x, y, dmg, shooter_idx, target_idx)
     step_counter = {"n": 0}
 
     def on_hit(arbiter, space, data):
         ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
+        if PROJECTILE_COLLISION_TYPE in (ct1, ct2):
+            proj_shape = arbiter.shapes[0] if ct1 == PROJECTILE_COLLISION_TYPE else arbiter.shapes[1]
+            other_ct = ct2 if ct1 == PROJECTILE_COLLISION_TYPE else ct1
+            proj = next((p for p in projectiles if p["shape"] is proj_shape), None)
+            if proj is None or proj in to_remove_projectiles:
+                return True
+            fi = ctype_to_idx.get(other_ct)
+            if fi == proj["shooter"]:
+                return True  # never hits its own shooter
+            if fi is not None and alive[fi]:
+                dmg = rng.uniform(6.0, 11.0)
+                hp[fi] = max(0.0, hp[fi] - dmg)
+                cx_, cy_ = proj["body"].position.x, proj["body"].position.y
+                projectile_hit_log.append((step_counter["n"], cx_, cy_, round(dmg), proj["shooter"], fi))
+            to_remove_projectiles.append(proj)
+            return True
         if OBSTACLE_COLLISION_TYPE in (ct1, ct2):
             other_ct = ct2 if ct1 == OBSTACLE_COLLISION_TYPE else ct1
             fi = ctype_to_idx.get(other_ct)
@@ -782,6 +861,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     hit_frame_flags = {}  # frame_index -> (x, y, dmg)
     obstacle_hit_frames = {}  # frame_index -> (x, y)
     wall_hit_frames = {}  # frame_index -> (x, y)
+    muzzle_flash_frames = {}  # frame_index -> (x, y, angle_deg)
+    projectile_hit_frames = {}  # frame_index -> (x, y, dmg, shooter_idx, target_idx)
     ko_events = []  # list of (frame_index, fighter_idx, x, y) — a list, not a
     # dict keyed by frame, because two fighters can die in the very same
     # frame window (a mutual/simultaneous KO) and would otherwise clobber
@@ -791,6 +872,45 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     while step_counter["n"] < max_steps:
         step_counter["n"] += 1
         space.step(dt)
+
+        for proj in projectiles:
+            if step_counter["n"] - proj["spawn_step"] > PROJECTILE_LIFE_STEPS and proj not in to_remove_projectiles:
+                to_remove_projectiles.append(proj)  # missed — timed out
+        if to_remove_projectiles:
+            for proj in to_remove_projectiles:
+                try:
+                    space.remove(proj["body"], proj["shape"])
+                except Exception:
+                    pass
+                if proj in projectiles:
+                    projectiles.remove(proj)
+            to_remove_projectiles.clear()
+
+        for i in range(n_fighters):
+            if not alive[i] or fighters[i]["kind"] != "pistol" or next_fire_step[i] is None:
+                continue
+            if step_counter["n"] < next_fire_step[i]:
+                continue
+            alive_targets = [j for j in range(n_fighters) if j != i and alive[j]]
+            if alive_targets:
+                j = rng.choice(alive_targets)
+                sx, sy = bodies[i].position.x, bodies[i].position.y
+                tx, ty = bodies[j].position.x, bodies[j].position.y
+                fire_ang = math.atan2(ty - sy, tx - sx) + math.radians(rng.uniform(-6, 6))
+                spawn_dist = fighter_radii[i] + PROJECTILE_RADIUS + 10
+                px = sx + math.cos(fire_ang) * spawn_dist
+                py = sy + math.sin(fire_ang) * spawn_dist
+                pbody = pymunk.Body(mass=0.05, moment=1.0)
+                pbody.position = (px, py)
+                pbody.velocity = (math.cos(fire_ang) * PROJECTILE_SPEED, math.sin(fire_ang) * PROJECTILE_SPEED)
+                pshape = pymunk.Circle(pbody, PROJECTILE_RADIUS)
+                pshape.elasticity = 0.0
+                pshape.friction = 0.0
+                pshape.collision_type = PROJECTILE_COLLISION_TYPE
+                space.add(pbody, pshape)
+                projectiles.append({"body": pbody, "shape": pshape, "shooter": i, "spawn_step": step_counter["n"]})
+                muzzle_flash_log.append((step_counter["n"], sx, sy, math.degrees(fire_ang)))
+            next_fire_step[i] = step_counter["n"] + rng.randint(PISTOL_FIRE_MIN_STEPS, PISTOL_FIRE_MAX_STEPS)
 
         if step_counter["n"] % lunge_interval_steps == 0:
             alive_idx = [i for i in range(n_fighters) if alive[i]]
@@ -817,12 +937,21 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 b = bodies[i]
                 pos.append((b.position.x, b.position.y, math.degrees(b.angle)))
                 chain_pos.append((chain_bodies[i].position.x, chain_bodies[i].position.y) if chain_bodies[i] else None)
-            frames.append({"pos": pos, "hp": list(hp), "alive": list(alive), "chain_pos": chain_pos})
+            proj_snapshot = [(p["body"].position.x, p["body"].position.y, math.degrees(p["body"].velocity.angle)) for p in projectiles]
+            frames.append({"pos": pos, "hp": list(hp), "alive": list(alive), "chain_pos": chain_pos, "projectiles": proj_snapshot})
             frame_idx += 1
 
         if hit_log and hit_log[-1][0] == step_counter["n"]:
             _, hx, hy, dmg, hi1, hi2 = hit_log[-1]
             hit_frame_flags[frame_idx - 1] = (hx, hy, dmg, hi1, hi2)
+
+        if muzzle_flash_log and muzzle_flash_log[-1][0] == step_counter["n"]:
+            _, mfx, mfy, mfang = muzzle_flash_log[-1]
+            muzzle_flash_frames[frame_idx - 1] = (mfx, mfy, mfang)
+
+        if projectile_hit_log and projectile_hit_log[-1][0] == step_counter["n"]:
+            _, phx, phy, pdmg, pshooter, ptarget = projectile_hit_log[-1]
+            projectile_hit_frames[frame_idx - 1] = (phx, phy, pdmg, pshooter, ptarget)
 
         if obstacle_hit_log and obstacle_hit_log[-1][0] == step_counter["n"]:
             _, ohx, ohy = obstacle_hit_log[-1]
@@ -894,7 +1023,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         replay_start = len(frames)
         for src_idx in range(r0, r1 + 1):
             src = frames[src_idx]
-            dup = {"pos": list(src["pos"]), "hp": list(src["hp"]), "alive": list(src["alive"]), "chain_pos": list(src.get("chain_pos", []))}
+            dup = {"pos": list(src["pos"]), "hp": list(src["hp"]), "alive": list(src["alive"]), "chain_pos": list(src.get("chain_pos", [])), "projectiles": list(src.get("projectiles", []))}
             for _ in range(2):  # each source frame plays twice => 2x slow-mo
                 new_idx = len(frames)
                 frames.append(dict(dup))
@@ -918,6 +1047,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         "hit_frame_flags": hit_frame_flags,
         "obstacle_hit_frames": obstacle_hit_frames,
         "wall_hit_frames": wall_hit_frames,
+        "muzzle_flash_frames": muzzle_flash_frames,
+        "projectile_hit_frames": projectile_hit_frames,
         "ko_events": ko_events,
         "fighters": fighters,
         "n_fighters": n_fighters,
@@ -1297,6 +1428,13 @@ def build_battle_clip(battle):
             pos.append((x, y, ang))
         return {"pos": pos, "hp": frames[0]["hp"], "alive": frames[0]["alive"]}
 
+    # Cinematic post-process: a soft radial vignette (darkened corners keep
+    # the eye on the arena center) precomputed once so every frame only
+    # pays for a cheap numpy multiply, not a re-render.
+    vy, vx = np.mgrid[0:h, 0:w].astype(np.float32)
+    vdist = np.sqrt(((vx - w / 2) / (w / 2)) ** 2 + ((vy - h / 2) / (h / 2)) ** 2)
+    vignette_mask = np.clip(1.0 - 0.35 * np.clip(vdist - 0.55, 0, None) ** 1.4, 0.55, 1.0).astype(np.float32)[:, :, None]
+
     def make_frame(t):
         raw_idx = int(round(t * fps))
         in_intro = raw_idx < intro_frames
@@ -1431,6 +1569,26 @@ def build_battle_clip(battle):
                     if a > wall_flash_alpha:
                         wall_flash_alpha, wall_flash_xy = a, (wxh, wyh)
 
+        muzzle_alpha, muzzle_info = 0, None
+        proj_hit_alpha, proj_hit_xy = 0, None
+        if not in_intro:
+            for hi in range(max(0, idx - 3), idx + 1):
+                if hi in battle["muzzle_flash_frames"]:
+                    mfx, mfy, mfang = battle["muzzle_flash_frames"][hi]
+                    age = idx - hi
+                    if age <= 3:
+                        a = max(0, int(220 * (1 - age / 3.0)))
+                        if a > muzzle_alpha:
+                            muzzle_alpha, muzzle_info = a, (mfx, mfy, mfang)
+            for hi in range(max(0, idx - 5), idx + 1):
+                if hi in battle["projectile_hit_frames"]:
+                    phx, phy, pdmg, psh, ptg = battle["projectile_hit_frames"][hi]
+                    age = idx - hi
+                    if age <= 5:
+                        a = max(0, int(220 * (1 - age / 5.0)))
+                        if a > proj_hit_alpha:
+                            proj_hit_alpha, proj_hit_xy = a, (phx, phy)
+
         first_blood_age = idx - first_hit_frame if (not in_intro and first_hit_frame is not None) else -1
         if 0 <= first_blood_age <= FIRST_BLOOD_FRAMES:
             pop = 1.0 + 0.35 * max(0, 1 - first_blood_age / 6)
@@ -1522,6 +1680,36 @@ def build_battle_clip(battle):
             wall_elapsed = 1.0 - wall_flash_alpha / 130.0
             ring_r = 6 + wall_elapsed * 10
             d.ellipse([wfx - ring_r, wfy - ring_r, wfx + ring_r, wfy + ring_r], outline=(*theme["border"][:3], wall_flash_alpha), width=2)
+
+        if not in_intro:
+            for (px, py, pang) in st.get("projectiles", []):
+                # a small streaking bullet with a short motion trail, drawn
+                # every frame it's alive (independent of the flash/spark
+                # events below, which only mark the muzzle and the impact).
+                prad = math.radians(pang)
+                trail_len = icon_size * 0.16
+                tx2 = px - math.cos(prad) * trail_len
+                ty2 = py - math.sin(prad) * trail_len
+                d.line([(tx2, ty2), (px, py)], fill=(255, 225, 120, 190), width=max(2, int(icon_size * 0.02)))
+                br = icon_size * 0.028
+                d.ellipse([px - br, py - br, px + br, py + br], fill=(255, 250, 210, 255))
+
+        if muzzle_alpha > 0:
+            mfx, mfy, mfang = muzzle_info
+            mrad = math.radians(mfang)
+            flx = mfx + math.cos(mrad) * icon_size * 0.22
+            fly = mfy + math.sin(mrad) * icon_size * 0.22
+            d.ellipse([flx - 15, fly - 15, flx + 15, fly + 15], fill=(255, 225, 120, muzzle_alpha))
+            d.ellipse([flx - 6, fly - 6, flx + 6, fly + 6], fill=(255, 255, 235, muzzle_alpha))
+
+        if proj_hit_alpha > 0:
+            phx, phy = proj_hit_xy
+            for k in range(6):
+                pang2 = math.radians(k * 60 + (int(phx) % 30))
+                x2 = phx + math.cos(pang2) * 15
+                y2 = phy + math.sin(pang2) * 15
+                d.line([(phx, phy), (x2, y2)], fill=(255, 235, 170, proj_hit_alpha), width=2)
+            d.ellipse([phx - 6, phy - 6, phx + 6, phy + 6], fill=(255, 250, 220, proj_hit_alpha))
 
         if not in_intro:
             for koi, fi, kx, ky in battle["ko_events"]:
@@ -1648,7 +1836,14 @@ def build_battle_clip(battle):
             sub = img.crop((int(cx0), int(cy0), int(cx0 + crop_w), int(cy0 + crop_h))).resize((w, region_h), Image.BICUBIC)
             img.paste(sub, (0, HUD_MARGIN))
 
-        arr = np.array(img.convert("RGB"))
+        arr = np.array(img.convert("RGB")).astype(np.float32)
+        # Gentle saturation + contrast lift and the precomputed vignette —
+        # a gaming-content color grade instead of a flat unprocessed render.
+        gray = arr.mean(axis=-1, keepdims=True)
+        arr = gray + (arr - gray) * 1.12
+        arr = (arr - 128.0) * 1.06 + 128.0
+        arr *= vignette_mask
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
         if shake_dx or shake_dy:
             arr = np.roll(arr, (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
         return arr
@@ -1753,6 +1948,19 @@ def _obstacle_clack():
     return sfx.astype(np.float32)
 
 
+def _gunshot():
+    """A short synthesized pistol crack — broadband noise burst plus a low
+    thump, no tonal ring (real gunfire has almost none)."""
+    dur = 0.11
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.exp(-t * 45)
+    noise = np.random.default_rng(int(dur * 88888)).uniform(-1, 1, n)
+    thump = np.sin(2 * np.pi * 130 * t) * np.exp(-t * 70)
+    sfx = (noise * 0.75 + thump * 0.5) * env
+    return sfx.astype(np.float32)
+
+
 def _hit_sound(material_a, material_b, intensity):
     a = MATERIAL_SFX.get(material_a, _clang_metal)(intensity)
     b = MATERIAL_SFX.get(material_b, _clang_metal)(intensity)
@@ -1834,6 +2042,14 @@ def build_sfx_array(battle):
     for frame_idx in battle["wall_hit_frames"]:
         t = INTRO_SECONDS + frame_idx / fps
         _add(t, _obstacle_clack(), vol=0.22)
+
+    for frame_idx in battle["muzzle_flash_frames"]:
+        t = INTRO_SECONDS + frame_idx / fps
+        _add(t, _gunshot(), vol=0.7)
+
+    for frame_idx in battle["projectile_hit_frames"]:
+        t = INTRO_SECONDS + frame_idx / fps
+        _add(t, _clang_metal(0.55), vol=0.5)
 
     finale_t = INTRO_SECONDS + battle["finale_start"] / fps
     _add(finale_t, _victory_chime(), vol=0.9)
