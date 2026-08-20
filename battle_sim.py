@@ -73,6 +73,72 @@ _MATERIAL_PHYSICS = {
     "whip": {"elasticity": 0.70, "friction": 0.44},
 }
 
+# --- Segmented hitboxes (viewer feedback: "all damage is done through
+# contact and is predetermined, both weapons get damaged each time which is
+# pointless") -----------------------------------------------------------
+# Every fighter's main body circle is only ever a "body" (handle/guard)
+# collision shape — it never deals real damage on its own, it just bounces.
+# Real damage is only dealt by a small extra "active" shape placed at the
+# weapon's actual cutting/striking part (blade tip, hammer head, axe edge,
+# ...), offset from body center in LOCAL space as a fraction of the
+# fighter's own collision radius. Offset convention: (0, -f) sits toward the
+# icon's drawn tip (small local-y = "up"), matching icon.rotate(-angle)'s
+# render convention 1:1 (verified in round 20 by cross-checking
+# body.local_to_world against the equivalent PIL rotation) — a positive x
+# offset swings the zone out to one side, used for asymmetric blades like
+# the Axe. Multiple entries = multiple independent damage points on one
+# weapon (e.g. Halberd's spike tip + its side blade).
+#
+# To add a new weapon class: add a WEAPON_POOL entry + WEAPON_REACH +
+# material physics fallback (existing per-material defaults apply if the
+# material is already known) + one ACTIVE_ZONES entry (or add the kind to
+# WHOLE_BODY_ACTIVE_KINDS for a thrown/all-edge weapon, or CHAIN_WEAPON_KINDS
+# inside simulate_battle for a flexible weapon) + an icon draw case. No
+# other engine code needs to change — a ranged weapon follows the Pistol's
+# existing separate projectile subsystem instead of/alongside a melee zone.
+# NOTE: offset + radius must exceed 1.0 (the main body's own collision
+# radius) or the zone is a dead letter — a circle fully contained inside the
+# bigger main-body circle can never be the shape that actually reaches an
+# opponent first, since the main circle's boundary is farther out in every
+# direction than a contained zone can ever be. Every entry below pokes past
+# the body silhouette by a real margin so it can independently register a
+# hit when the weapon is aimed tip-first at an opponent, while a graze from
+# any other angle still only offers up the plain body/guard circle.
+ACTIVE_ZONES = {
+    "sword": [(0, -0.72, 0.46)],
+    "katana": [(0, -0.72, 0.46)],
+    "dagger": [(0, -0.72, 0.46)],
+    "kunai": [(0, -0.72, 0.46)],
+    "cleaver": [(0, -0.62, 0.56)],
+    "rapier": [(0, -0.90, 0.38)],
+    "hammer": [(0, -0.58, 0.62)],
+    "warhammer": [(0, -0.55, 0.68)],
+    "mace": [(0, -0.58, 0.62)],
+    "axe": [(0.28, -0.59, 0.55)],
+    "halberd": [(0, -0.85, 0.43), (0.26, -0.56, 0.52)],  # spike tip + blade
+    "scythe": [(0.22, -0.62, 0.55)],
+    "spear": [(0, -0.85, 0.43)],
+    "trident": [(0, -0.85, 0.43)],
+    "staff": [(0, -0.85, 0.43)],
+    "claws": [(0, -0.55, 0.62)],
+    "chainsaw": [(0, -0.35, 0.82)],
+    "pistol": [(0, -0.68, 0.45)],
+}
+# Thrown/all-edge weapons — the entire silhouette is a cutting surface, so
+# the main body shape itself is "active" instead of getting a separate zone.
+WHOLE_BODY_ACTIVE_KINDS = {"shuriken", "boomerang"}
+
+# Damage multiplier when the STRIKING shape that touched an opponent was an
+# "active" zone vs just the passive body/handle/guard — this is what makes
+# hits asymmetric: your blade landing on their handle deals real damage,
+# their handle bumping your blade does not deal damage back for free.
+ACTIVE_DAMAGE_MULT = 1.15
+GUARD_DAMAGE_MULT = 0.28
+# Bonus for landing an active-zone hit while the victim's own colliding
+# shape was passive (they weren't mid-swing with their own active zone) —
+# rewards a clean, undefended hit over a mutual clash.
+CLEAN_HIT_BONUS = 1.15
+
 
 def _color_dist(c1, c2):
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
@@ -645,7 +711,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         space.add(body, shape)
         return body, shape
 
-    speed0 = min(w, h) * 0.40
+    speed0 = min(w, h) * 0.50
     spawn_r = min(right_arena - left_arena, bottom_arena - top_arena) * (0.30 if n_fighters <= 2 else 0.33)
     angle_offset = rng.uniform(0, 360)
 
@@ -654,63 +720,93 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     # power ~0.8) flying — the collision itself feels like weight, not just
     # the HP number ticking down.
     bodies, shapes, fighter_radii = [], [], []
+    # shape -> "active" (a real blade/head/point — deals real damage) or
+    # "body" (handle/shaft/guard — bounces but never deals damage on its
+    # own). See the ACTIVE_ZONES comment above for the full design.
+    shape_role = {}
     # Flail/nunchaku/whip are chain/flexible weapons in concept — give each
-    # one a tiny second body with NO collision shape (so it can never affect
-    # damage/hit detection) tethered to the main body by a soft DampedSpring.
-    # It has nothing scripted about it: real inertia makes it lag behind
-    # during travel and swing/overshoot on a sudden velocity change (a hit),
-    # then settle into an orbit — genuine physics, purely a render-time
-    # flourish layered on top of the existing single-body gameplay model.
+    # one a tiny second body tethered to the main body by a soft
+    # DampedSpring. Real inertia makes it lag behind during travel and
+    # swing/overshoot on a sudden velocity change (a hit), then settle into
+    # an orbit — genuine physics, not scripted. The swinging head is this
+    # weapon's actual "active" damage zone (a flail/whip hits with its tip,
+    # not the hand holding it); the head carries no mass-relevant collision
+    # shape of the main fighter body, so it can never distort the fighter's
+    # own mass/moment.
     CHAIN_WEAPON_KINDS = {"flail", "nunchaku", "whip"}
     chain_bodies = [None] * n_fighters
     chain_springs = [None] * n_fighters
-    # Long, straight-bodied weapons get a second small collision circle out
-    # at their drawn tip instead of just a bigger single circle centered on
-    # the icon — true reach along the direction the weapon is facing, not
-    # just a larger blob. Chain weapons (whip/nunchaku/flail) already get
-    # their own reach-like swing from the DampedSpring head above, so they
-    # aren't included here.
-    REACH_TIP_KINDS = {"spear", "trident", "halberd", "staff", "scythe", "rapier"}
     for i in range(n_fighters):
         ang = math.radians(angle_offset + i * 360 / n_fighters)
         x = center_x + math.cos(ang) * spawn_r
         y = center_y + math.sin(ang) * spawn_r
         aim = math.degrees(math.atan2(center_y - y, center_x - x)) + rng.uniform(-25, 25)
-        fighter_radius = base_radius * WEAPON_REACH.get(fighters[i]["kind"], 1.0)
+        kind = fighters[i]["kind"]
+        fighter_radius = base_radius * WEAPON_REACH.get(kind, 1.0)
         phys = _MATERIAL_PHYSICS.get(fighters[i]["material"], _MATERIAL_PHYSICS["metal"])
         body, shape = spawn(
             x, y, aim, speed0, ctype=i + 1, mass=fighters[i]["power"], radius=fighter_radius,
             elasticity=phys["elasticity"], friction=phys["friction"],
         )
+        # All of a single fighter's own shapes (body + every active zone,
+        # including a chain weapon's separately-bodied head) share one
+        # pymunk collision group so pymunk never resolves a "collision"
+        # between a fighter's own parts. Without this, a chain weapon's
+        # head — a genuinely separate physics body tethered by a spring —
+        # can physically clip its own owner's body shape (most violently
+        # right at spawn, where the head starts at rest while the main body
+        # launches at full speed) and silently deal that fighter
+        # self-damage before the fight even starts.
+        own_shape_filter = pymunk.ShapeFilter(group=i + 1)
+        shape.filter = own_shape_filter
         bodies.append(body)
         shapes.append(shape)
         fighter_radii.append(fighter_radius)
+        shape_role[shape] = "active" if kind in WHOLE_BODY_ACTIVE_KINDS else "body"
 
-        if fighters[i]["kind"] in CHAIN_WEAPON_KINDS:
-            chain_len = fighter_radius * 0.55
+        if kind in CHAIN_WEAPON_KINDS:
+            # rest_length > 1.0*fighter_radius so the head sits genuinely
+            # outside the main body's own collision circle even at rest, not
+            # tucked inside it — same "must poke past the body silhouette"
+            # requirement as every other active zone (see ACTIVE_ZONES note).
+            chain_len = fighter_radius * 1.20
             head_body = pymunk.Body(mass=0.12, moment=1.0)
             head_body.position = (x + chain_len, y)
+            # Match the main body's launch velocity so the spring doesn't
+            # get yanked taut by a sudden relative-velocity mismatch on the
+            # very first physics step (the head would otherwise start at
+            # rest while its own body rockets off at speed0).
+            head_body.velocity = body.velocity
             space.add(head_body)
             spring = pymunk.DampedSpring(body, head_body, (0, 0), (0, 0), rest_length=chain_len, stiffness=90, damping=4.0)
             space.add(spring)
             chain_bodies[i] = head_body
             chain_springs[i] = spring
-
-        if fighters[i]["kind"] in REACH_TIP_KINDS:
-            # A second, smaller collision circle offset toward the icon's
-            # drawn tip (local (0, -offset) — the icon's tip sits at small-y
-            # in its own unrotated canvas, and pymunk's body-local rotation
-            # convention matches the render's icon.rotate(-angle) exactly,
-            # so this offset swings with the body and stays over the visible
-            # blade tip at any rotation). Same collision_type as the main
-            # body, so damage attribution is unaffected — it's purely an
-            # extra place a long weapon can actually land a hit from.
-            tip_offset = fighter_radius * 0.4
-            tip_shape = pymunk.Circle(body, fighter_radius * 0.32, offset=(0, -tip_offset))
-            tip_shape.elasticity = phys["elasticity"]
-            tip_shape.friction = phys["friction"]
-            tip_shape.collision_type = i + 1
-            space.add(tip_shape)
+            head_shape = pymunk.Circle(head_body, fighter_radius * 0.32)
+            head_shape.elasticity = phys["elasticity"]
+            head_shape.friction = phys["friction"]
+            head_shape.collision_type = i + 1
+            head_shape.filter = own_shape_filter
+            space.add(head_shape)
+            shape_role[head_shape] = "active"
+        elif kind in ACTIVE_ZONES:
+            # One or more small collision circles offset toward the icon's
+            # actual blade/head/point, in LOCAL space (so each one swings
+            # with the body and stays over the visible striking part at any
+            # rotation — see the ACTIVE_ZONES comment for the offset
+            # convention). Same collision_type as the main body, so damage
+            # attribution is unaffected; only shape_role distinguishes them.
+            for (ox_frac, oy_frac, r_frac) in ACTIVE_ZONES[kind]:
+                zone_shape = pymunk.Circle(
+                    body, fighter_radius * r_frac,
+                    offset=(fighter_radius * ox_frac, fighter_radius * oy_frac),
+                )
+                zone_shape.elasticity = phys["elasticity"]
+                zone_shape.friction = phys["friction"]
+                zone_shape.collision_type = i + 1
+                zone_shape.filter = own_shape_filter
+                space.add(zone_shape)
+                shape_role[zone_shape] = "active"
 
     # Pistol: the one ranged weapon in the roster. It still has a normal
     # melee circle above (bounces/gets hit like everyone else) but also
@@ -822,6 +918,22 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         if not alive[i1] or not alive[i2]:
             return True
 
+        # Segmented hitboxes: which physical shape each fighter actually hit
+        # with — "active" (blade/head/point) or "body" (handle/guard) — is
+        # what decides whether this exchange deals real damage, not just the
+        # raw fact that a collision happened. See the ACTIVE_ZONES comment
+        # near the top of the file for the full rationale.
+        role1 = shape_role.get(arbiter.shapes[0], "body")
+        role2 = shape_role.get(arbiter.shapes[1], "body")
+
+        def _hit_mult(attacker_role, victim_role):
+            if attacker_role != "active":
+                return GUARD_DAMAGE_MULT
+            return ACTIVE_DAMAGE_MULT * (CLEAN_HIT_BONUS if victim_role == "body" else 1.0)
+
+        mult_for_d1 = _hit_mult(role2, role1)  # damage TO i1, dealt by i2's shape
+        mult_for_d2 = _hit_mult(role1, role2)  # damage TO i2, dealt by i1's shape
+
         impulse = arbiter.total_impulse.length
         base = min(24.0, max(2.5, impulse * 0.028))
         p1, p2 = fighters[i1]["power"], fighters[i2]["power"]
@@ -830,14 +942,32 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         # with the same impulse but no rotation.
         spin1 = min(0.35, abs(bodies[i1].angular_velocity) * 0.035)
         spin2 = min(0.35, abs(bodies[i2].angular_velocity) * 0.035)
-        d1 = base * (p2 / p1) * (1.0 + spin2) * rng.uniform(0.82, 1.18)
-        d2 = base * (p1 / p2) * (1.0 + spin1) * rng.uniform(0.82, 1.18)
+        d1 = base * (p2 / p1) * (1.0 + spin2) * rng.uniform(0.82, 1.18) * mult_for_d1
+        d2 = base * (p1 / p2) * (1.0 + spin1) * rng.uniform(0.82, 1.18) * mult_for_d2
         hp[i1] = max(0.0, hp[i1] - d1)
         hp[i2] = max(0.0, hp[i2] - d2)
 
         cps = arbiter.contact_point_set.points
         cx, cy = (cps[0].point_a.x, cps[0].point_a.y) if cps else (bodies[i1].position.x, bodies[i1].position.y)
         hit_log.append((step_counter["n"], cx, cy, round(d1 + d2), i1, i2))
+
+        # A real (non-blocked) exchange gets an explicit extra separating
+        # knockback beyond whatever the elastic collision itself already
+        # produced. A FIXED impulse split by each fighter's own mass (mass
+        # == "power") means the heavier weapon barely moves while the
+        # lighter one gets shoved much further — momentum, not a scripted
+        # "heavy weapon wins" rule. Pure handle-vs-handle blocks stay a
+        # cheap, undramatic bounce.
+        if mult_for_d1 > GUARD_DAMAGE_MULT or mult_for_d2 > GUARD_DAMAGE_MULT:
+            dx = bodies[i2].position.x - bodies[i1].position.x
+            dy = bodies[i2].position.y - bodies[i1].position.y
+            dist = max(1.0, math.hypot(dx, dy))
+            ux, uy = dx / dist, dy / dist
+            knock = impulse * 0.55
+            bodies[i1].apply_impulse_at_world_point((-ux * knock, -uy * knock), (cx, cy))
+            bodies[i2].apply_impulse_at_world_point((ux * knock, uy * knock), (cx, cy))
+            _apply_recovery(i1)
+            _apply_recovery(i2)
         return True
 
     space.on_collision(post_solve=on_hit)
@@ -853,9 +983,36 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     # both guarantees the fight escalates and reads as active aggression
     # rather than passive floating — doubly important with 3-4 fighters,
     # where it also stops the pack from splitting into isolated orbits.
-    lunge_interval_steps = int(1.1 * PHYSICS_HZ)
-    lunge_strength = speed0 * 0.65
-    max_speed = speed0 * 1.8
+    #
+    # Attack Speed & Recovery: this schedule is now per-fighter instead of
+    # one global tick for everyone. A light weapon (low "power") lunges
+    # again sooner — reads as quick, high-tempo strikes. A heavy weapon
+    # lunges less often (slower windup) but every landed or received hit
+    # additionally forces a short recovery delay before its NEXT lunge and
+    # saps its angular velocity — a heavy weapon that just swung (or just
+    # got hit) is genuinely more exposed for a moment, not just numerically
+    # slower. A light weapon gets the opposite: its next lunge comes sooner
+    # after any exchange, reflecting a quick recovery.
+    BASE_LUNGE_INTERVAL_STEPS = int(0.95 * PHYSICS_HZ)
+    lunge_strength = speed0 * 0.70
+    max_speed = speed0 * 2.0
+    RECOVERY_HEAVY_THRESHOLD = 1.15
+    RECOVERY_LIGHT_THRESHOLD = 0.85
+
+    def _lunge_interval_for(fi):
+        p = fighters[fi]["power"]
+        mult = 0.60 + max(0.0, min(1.0, (p - 0.70) / 0.70)) * 0.90
+        return max(int(0.45 * PHYSICS_HZ), int(BASE_LUNGE_INTERVAL_STEPS * mult))
+
+    next_lunge_step = [rng.randint(int(0.3 * PHYSICS_HZ), _lunge_interval_for(i)) for i in range(n_fighters)]
+
+    def _apply_recovery(fi):
+        p = fighters[fi]["power"]
+        if p >= RECOVERY_HEAVY_THRESHOLD:
+            bodies[fi].angular_velocity *= 0.55
+            next_lunge_step[fi] = max(next_lunge_step[fi], step_counter["n"] + int(0.35 * PHYSICS_HZ))
+        elif p <= RECOVERY_LIGHT_THRESHOLD:
+            next_lunge_step[fi] = min(next_lunge_step[fi], step_counter["n"] + int(0.20 * PHYSICS_HZ))
 
     frames = []
     hit_frame_flags = {}  # frame_index -> (x, y, dmg)
@@ -912,12 +1069,12 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 muzzle_flash_log.append((step_counter["n"], sx, sy, math.degrees(fire_ang)))
             next_fire_step[i] = step_counter["n"] + rng.randint(PISTOL_FIRE_MIN_STEPS, PISTOL_FIRE_MAX_STEPS)
 
-        if step_counter["n"] % lunge_interval_steps == 0:
-            alive_idx = [i for i in range(n_fighters) if alive[i]]
-            for i in alive_idx:
-                others = [j for j in alive_idx if j != i]
-                if not others:
-                    continue
+        alive_idx = [i for i in range(n_fighters) if alive[i]]
+        for i in alive_idx:
+            if step_counter["n"] < next_lunge_step[i]:
+                continue
+            others = [j for j in alive_idx if j != i]
+            if others:
                 j = rng.choice(others)
                 dx = bodies[j].position.x - bodies[i].position.x
                 dy = bodies[j].position.y - bodies[i].position.y
@@ -929,6 +1086,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 sp = bodies[i].velocity.length
                 if sp > max_speed:
                     bodies[i].velocity = bodies[i].velocity * (max_speed / sp)
+            next_lunge_step[i] = step_counter["n"] + _lunge_interval_for(i)
 
         if step_counter["n"] % steps_per_frame == 0:
             pos = []
