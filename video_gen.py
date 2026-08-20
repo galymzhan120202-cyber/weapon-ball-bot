@@ -309,10 +309,20 @@ _ALL_WEAPON_NAMES = [w["name"] for w in WEAPON_POOL]
 def _weapon_set_from_title(title):
     """Extracts which weapon names are mentioned in a video title, using
     word-boundary matching so e.g. "Hammer" doesn't false-match inside
-    "Warhammer"."""
-    found = set()
+    "Warhammer" (no space, so \\b alone already rejects it). That alone
+    isn't enough once a roster name contains ANOTHER full roster name as
+    its own separate word — e.g. "Axe" is a real standalone word inside
+    "War Axe" (there IS a space), so \\bAxe\\b matches there too. Any match
+    fully contained inside a different, longer match's span is dropped, so
+    a "War Axe" title reports only "War Axe", not also a phantom "Axe"."""
+    matches = []  # (start, end, name)
     for name in _ALL_WEAPON_NAMES:
-        if re.search(r'\b' + re.escape(name) + r'\b', title, re.IGNORECASE):
+        for m in re.finditer(r'\b' + re.escape(name) + r'\b', title, re.IGNORECASE):
+            matches.append((m.start(), m.end(), name))
+    found = set()
+    for s, e, name in matches:
+        contained = any(s2 <= s and e <= e2 and (s2, e2) != (s, e) for (s2, e2, _) in matches)
+        if not contained:
             found.add(name)
     return frozenset(found)
 

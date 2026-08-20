@@ -32,7 +32,7 @@ WEAPON_POOL = [
     {"name": "Mace", "kind": "mace", "color": (176, 100, 214), "power": 1.22, "material": "blunt"},
     {"name": "Flail", "kind": "flail", "color": (210, 140, 60), "power": 1.30, "material": "blunt"},
     {"name": "Nunchaku", "kind": "nunchaku", "color": (140, 90, 50), "power": 0.85, "material": "wood"},
-    {"name": "Whip", "kind": "whip", "color": (180, 60, 60), "power": 0.70, "material": "whip"},
+    {"name": "Whip", "kind": "whip", "color": (180, 60, 60), "power": 0.85, "material": "whip"},
     {"name": "Scythe", "kind": "scythe", "color": (72, 190, 226), "power": 1.08, "material": "metal"},
     {"name": "Claws", "kind": "claws", "color": (230, 230, 235), "power": 0.88, "material": "metal"},
     {"name": "Chainsaw", "kind": "chainsaw", "color": (230, 190, 40), "power": 1.35, "material": "mechanical"},
@@ -43,6 +43,9 @@ WEAPON_POOL = [
     {"name": "Cleaver", "kind": "cleaver", "color": (210, 90, 90), "power": 1.10, "material": "metal"},
     {"name": "Boomerang", "kind": "boomerang", "color": (190, 140, 75), "power": 0.82, "material": "wood"},
     {"name": "Pistol", "kind": "pistol", "color": (70, 70, 78), "power": 0.74, "material": "metal"},
+    {"name": "Dual Daggers", "kind": "dual_daggers", "color": (255, 165, 45), "power": 0.80, "material": "metal"},
+    {"name": "War Axe", "kind": "war_axe", "color": (176, 66, 48), "power": 1.18, "material": "metal"},
+    {"name": "Tomahawk", "kind": "tomahawk", "color": (150, 182, 92), "power": 0.90, "material": "metal"},
 ]
 
 # Physical collision-radius multiplier per weapon kind, independent of the
@@ -54,9 +57,10 @@ WEAPON_POOL = [
 WEAPON_REACH = {
     "sword": 1.00, "katana": 1.05, "axe": 0.95, "hammer": 0.85, "warhammer": 1.05,
     "spear": 1.25, "trident": 1.22, "dagger": 0.72, "kunai": 0.70, "mace": 0.85,
-    "flail": 0.95, "nunchaku": 0.90, "whip": 1.30, "scythe": 1.15, "claws": 0.75,
+    "flail": 0.95, "nunchaku": 0.90, "whip": 0.95, "scythe": 1.15, "claws": 0.75,
     "chainsaw": 1.00, "staff": 1.20, "shuriken": 0.65, "rapier": 1.15,
     "halberd": 1.25, "cleaver": 0.85, "boomerang": 0.90, "pistol": 0.80,
+    "dual_daggers": 0.80, "war_axe": 1.05, "tomahawk": 0.82,
 }
 
 # Per-material collision feel: metal stays crisp/springy (near-elastic,
@@ -123,6 +127,9 @@ ACTIVE_ZONES = {
     "claws": [(0, -0.55, 0.62)],
     "chainsaw": [(0, -0.35, 0.82)],
     "pistol": [(0, -0.68, 0.45)],
+    "dual_daggers": [(-0.45, -0.62, 0.42), (0.45, -0.62, 0.42)],  # twin blades
+    "war_axe": [(-0.32, -0.58, 0.54), (0.32, -0.58, 0.54)],  # double-bladed head
+    "tomahawk": [(0.26, -0.60, 0.48)],  # compact single-side blade
 }
 # Thrown/all-edge weapons — the entire silhouette is a cutting surface, so
 # the main body shape itself is "active" instead of getting a separate zone.
@@ -420,6 +427,34 @@ def _draw_icon_shape(kind, color, size=170):
         img.alpha_composite(_gradient_fill(size, lambda md: md.polygon(grip_pts, fill=255), color), (0, 0))
         d.rectangle([cx - size * 0.05, size * 0.35, cx + size * 0.15, size * 0.41], fill=(20, 20, 24, 255))
         d.ellipse([cx - size * 0.045, size * 0.11, cx + size * 0.045, size * 0.16], fill=(15, 15, 18, 255))
+    elif kind == "dual_daggers":
+        # Two mirrored dagger blades — same blade/guard/handle construction
+        # as the single Dagger, just duplicated left and right of center.
+        bw = size * 0.05
+        for side in (-1, 1):
+            bx = cx + side * size * 0.16
+            img.alpha_composite(_gradient_fill(size, lambda md, bx=bx: md.polygon(
+                [(bx, size * 0.14), (bx + bw, size * 0.50), (bx - bw, size * 0.50)], fill=255), color), (0, 0))
+            _metal_fuller(d, (bx, size * 0.17), (bx, size * 0.47), max(1, int(bw * 0.25)), color)
+            d.rectangle([bx - size * 0.09, size * 0.50, bx + size * 0.09, size * 0.55], fill=(*STEEL, 255))
+            d.rectangle([bx - bw * 0.6, size * 0.55, bx + bw * 0.6, size * 0.82], fill=(*WOOD, 255))
+    elif kind == "war_axe":
+        # A double-bladed axe head: the exact same crescent-blade formula
+        # that fixed Axe's silhouette in round 19, mirrored onto both sides
+        # of the shaft instead of just one.
+        _wood_line(d, (cx, size * 0.92), (cx, size * 0.20), int(size * 0.055))
+        for side in (-1, 1):
+            bcx = cx + side * size * 0.09
+            img.alpha_composite(_gradient_fill(size, lambda md, bcx=bcx, side=side: _crescent_blade(
+                md, bcx, size * 0.24, size * 0.26, size * 0.20, side * size * 0.155), color), (0, 0))
+    elif kind == "tomahawk":
+        # A compact single-side hatchet: Axe's crescent blade, scaled down
+        # and set lower on a shorter handle for a one-handed throwing-axe
+        # silhouette instead of Axe's full two-handed size.
+        _wood_line(d, (cx, size * 0.88), (cx, size * 0.32), int(size * 0.045))
+        bcx, bcy = cx + size * 0.10, size * 0.30
+        img.alpha_composite(_gradient_fill(size, lambda md: _crescent_blade(
+            md, bcx, bcy, size * 0.22, size * 0.17, size * 0.13), color), (0, 0))
     return img
 
 
@@ -778,7 +813,19 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             # tucked inside it — same "must poke past the body silhouette"
             # requirement as every other active zone (see ACTIVE_ZONES note).
             chain_len = fighter_radius * 1.20
-            head_body = pymunk.Body(mass=0.12, moment=1.0)
+            # Mass matters here: collision impulse (and thus damage, via
+            # on_hit's impulse-driven `base`) scales with the reduced mass
+            # of the two colliding bodies, which collapses toward the
+            # SMALLER body's mass when they're very unequal. The original
+            # mass=0.12 was chosen back when this head had no collision
+            # shape at all and was purely a render-time flourish — now that
+            # it's the weapon's actual active damage zone, that same
+            # tininess was silently starving its own hits (measured: ~2.5x
+            # smaller impulse than a normal body-body collision, landing at
+            # the damage floor 55% of the time vs 28% normally). 0.35 keeps
+            # it lighter than a full fighter body (so it still lags/swings
+            # with real inertia) without crippling the impulse it can land.
+            head_body = pymunk.Body(mass=0.35, moment=1.0)
             head_body.position = (x + chain_len, y)
             # Match the main body's launch velocity so the spring doesn't
             # get yanked taut by a sudden relative-velocity mismatch on the
