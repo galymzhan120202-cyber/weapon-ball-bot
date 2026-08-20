@@ -138,6 +138,14 @@ GUARD_DAMAGE_MULT = 0.28
 # shape was passive (they weren't mid-swing with their own active zone) —
 # rewards a clean, undefended hit over a mutual clash.
 CLEAN_HIT_BONUS = 1.15
+# Shuriken/Boomerang's WHOLE_BODY_ACTIVE_KINDS status means literally every
+# collision they're in registers as an "active" strike on offense (there is
+# no passive handle part to miss with), while a normal weapon frequently
+# wastes a touch on its handle before its small zone lines up. That
+# structural always-on advantage made them dominate the win-rate stats once
+# guard/active damage split apart — this discount brings their offense back
+# in line without touching their mass/knockback feel.
+WHOLE_BODY_DAMAGE_DISCOUNT = 0.72
 
 
 def _color_dist(c1, c2):
@@ -863,7 +871,11 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     hp = [START_HP] * n_fighters
     alive = [True] * n_fighters
     ctype_to_idx = {i + 1: i for i in range(n_fighters)}
-    hit_log = []  # (step_index, x, y, total_dmg)
+    hit_log = []  # (step_index, x, y, total_dmg, i1, i2, hit_type) — hit_type
+    # is one of "block" (both sides only touched with a passive body/guard
+    # shape), "clean" (exactly one side struck with an active zone), or
+    # "clash" (both sides struck with an active zone) — see the ACTIVE_ZONES
+    # comment near the top of the file.
     obstacle_hit_log = []  # (step_index, x, y) — a weapon bounced off a static obstacle
     wall_hit_log = []  # (step_index, x, y) — a weapon bounced off the arena boundary
     # Weapons clip the arena wall constantly (perfectly elastic bounces), far
@@ -926,13 +938,30 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         role1 = shape_role.get(arbiter.shapes[0], "body")
         role2 = shape_role.get(arbiter.shapes[1], "body")
 
-        def _hit_mult(attacker_role, victim_role):
+        def _hit_mult(attacker_role, victim_role, attacker_kind):
             if attacker_role != "active":
                 return GUARD_DAMAGE_MULT
-            return ACTIVE_DAMAGE_MULT * (CLEAN_HIT_BONUS if victim_role == "body" else 1.0)
+            m = ACTIVE_DAMAGE_MULT
+            if attacker_kind in WHOLE_BODY_ACTIVE_KINDS:
+                m *= WHOLE_BODY_DAMAGE_DISCOUNT
+            return m * (CLEAN_HIT_BONUS if victim_role == "body" else 1.0)
 
-        mult_for_d1 = _hit_mult(role2, role1)  # damage TO i1, dealt by i2's shape
-        mult_for_d2 = _hit_mult(role1, role2)  # damage TO i2, dealt by i1's shape
+        mult_for_d1 = _hit_mult(role2, role1, fighters[i2]["kind"])  # damage TO i1, dealt by i2's shape
+        mult_for_d2 = _hit_mult(role1, role2, fighters[i1]["kind"])  # damage TO i2, dealt by i1's shape
+
+        # Classify the exchange itself, purely from which shapes actually
+        # touched — used downstream to make the mechanic visible/audible,
+        # not just a hidden number: a "block" (both sides only offered up
+        # their passive handle/guard) should read as a cheap, undramatic
+        # bump; a "clash" (both landed with an active zone) or "clean" hit
+        # (one side struck an undefended opponent) should read as a real
+        # moment.
+        if role1 == "active" and role2 == "active":
+            hit_type = "clash"
+        elif role1 == "active" or role2 == "active":
+            hit_type = "clean"
+        else:
+            hit_type = "block"
 
         impulse = arbiter.total_impulse.length
         base = min(24.0, max(2.5, impulse * 0.028))
@@ -949,7 +978,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 
         cps = arbiter.contact_point_set.points
         cx, cy = (cps[0].point_a.x, cps[0].point_a.y) if cps else (bodies[i1].position.x, bodies[i1].position.y)
-        hit_log.append((step_counter["n"], cx, cy, round(d1 + d2), i1, i2))
+        hit_log.append((step_counter["n"], cx, cy, round(d1 + d2), i1, i2, hit_type))
 
         # A real (non-blocked) exchange gets an explicit extra separating
         # knockback beyond whatever the elastic collision itself already
@@ -958,7 +987,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         # lighter one gets shoved much further — momentum, not a scripted
         # "heavy weapon wins" rule. Pure handle-vs-handle blocks stay a
         # cheap, undramatic bounce.
-        if mult_for_d1 > GUARD_DAMAGE_MULT or mult_for_d2 > GUARD_DAMAGE_MULT:
+        if hit_type != "block":
             dx = bodies[i2].position.x - bodies[i1].position.x
             dy = bodies[i2].position.y - bodies[i1].position.y
             dist = max(1.0, math.hypot(dx, dy))
@@ -1100,8 +1129,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             frame_idx += 1
 
         if hit_log and hit_log[-1][0] == step_counter["n"]:
-            _, hx, hy, dmg, hi1, hi2 = hit_log[-1]
-            hit_frame_flags[frame_idx - 1] = (hx, hy, dmg, hi1, hi2)
+            _, hx, hy, dmg, hi1, hi2, hit_type = hit_log[-1]
+            hit_frame_flags[frame_idx - 1] = (hx, hy, dmg, hi1, hi2, hit_type)
 
         if muzzle_flash_log and muzzle_flash_log[-1][0] == step_counter["n"]:
             _, mfx, mfy, mfang = muzzle_flash_log[-1]
@@ -1494,6 +1523,7 @@ def build_battle_clip(battle):
     win_font = get_font(int(h * 0.055))
     dmg_font = get_font(int(h * 0.026))
     first_blood_font = get_font(int(h * 0.048))
+    clean_hit_font = get_font(int(h * 0.024))
     count_font = get_font(int(h * 0.11))
     ko_font = get_font(int(h * 0.026))
     replay_font = get_font(int(h * 0.038))
@@ -1713,12 +1743,25 @@ def build_battle_clip(battle):
         dmg_popup = None
         shake_dx = shake_dy = 0.0
         punch_age = {}  # fighter_idx -> frames since a hit they were part of
+        block_flash_alpha, block_flash_xy = 0, None
+        clean_tag = None  # (x, y, age, alpha) — "CLEAN HIT!" callout
         if not in_intro:
             for hi in range(max(0, idx - 10), idx + 1):
                 if hi not in battle["hit_frame_flags"]:
                     continue
-                hx, hy, dmg, hi1, hi2 = battle["hit_frame_flags"][hi]
+                hx, hy, dmg, hi1, hi2, hit_type = battle["hit_frame_flags"][hi]
                 age = idx - hi
+                if hit_type == "block":
+                    # Handle-vs-handle: a cheap, quiet parry spark only — no
+                    # flash/shake/damage-popup/weapon-pop, so a "block" reads
+                    # as visibly weaker than a real hit instead of getting
+                    # the same full-strength treatment every collision used
+                    # to get.
+                    if age <= 5:
+                        a = max(0, int(140 * (1 - age / 5.0)))
+                        if a > block_flash_alpha:
+                            block_flash_alpha, block_flash_xy = a, (hx, hy)
+                    continue
                 if age <= 4:
                     a = max(0, int(230 * (1 - age / 4.0)))
                     if a > flash_alpha:
@@ -1736,6 +1779,10 @@ def build_battle_clip(battle):
                     for fi in (hi1, hi2):
                         if fi not in punch_age or age < punch_age[fi]:
                             punch_age[fi] = age
+                if hit_type == "clean" and age <= 9:
+                    pa = max(0, int(255 * (1 - age / 9.0)))
+                    if clean_tag is None or age < clean_tag[2]:
+                        clean_tag = (hx, hy, age, pa)
 
         obs_flash_alpha, obs_flash_xy = 0, None
         if not in_intro:
@@ -1853,6 +1900,23 @@ def build_battle_clip(battle):
                 d.ellipse([fx - 16, fy - 16, fx + 16, fy + 16], fill=(255, 250, 215, flash_alpha))
 
             _draw_arena_impact_fx(d, theme.get("impact_fx", "dust_ring"), fx, fy, elapsed, flash_alpha, theme["particle"])
+
+        if block_flash_alpha > 0:
+            # A handle-vs-handle block — deliberately the plainest reaction
+            # in the file (smaller/quieter than even the obstacle bounce):
+            # a small pale ring with no sparks, no arena impact FX, so it
+            # unmistakably reads as "nothing happened" next to a real hit.
+            bfx, bfy = block_flash_xy
+            block_elapsed = 1.0 - block_flash_alpha / 140.0
+            ring_r = 8 + block_elapsed * 12
+            d.ellipse([bfx - ring_r, bfy - ring_r, bfx + ring_r, bfy + ring_r], outline=(225, 225, 232, block_flash_alpha), width=2)
+
+        if clean_tag is not None:
+            ctx, cty, ct_age, ct_alpha = clean_tag
+            ct_text = "CLEAN HIT!"
+            ctw = d.textlength(ct_text, font=clean_hit_font)
+            ct_y = cty - h * 0.05 - ct_age * 1.6
+            d.text((ctx - ctw / 2, ct_y), ct_text, font=clean_hit_font, fill=(255, 235, 90, ct_alpha), stroke_width=2, stroke_fill=(0, 0, 0, ct_alpha))
 
         if obs_flash_alpha > 0:
             # a weapon bounced off the static obstacle — give it its own
@@ -2218,11 +2282,17 @@ def build_sfx_array(battle):
     _add(3 * quarter, _fight_horn())
 
     fighters = battle["fighters"]
-    dmgs = [dmg for (_, _, dmg, _, _) in battle["hit_frame_flags"].values()]
+    dmgs = [v[2] for v in battle["hit_frame_flags"].values() if v[5] != "block"]
     max_dmg = max(dmgs) if dmgs else 1.0
 
-    for frame_idx, (_, _, dmg, i1, i2) in battle["hit_frame_flags"].items():
+    for frame_idx, (_, _, dmg, i1, i2, hit_type) in battle["hit_frame_flags"].items():
         t = INTRO_SECONDS + frame_idx / fps
+        if hit_type == "block":
+            # A handle bump gets its own quiet, distinct "tink" instead of a
+            # scaled-down clash sound — audibly different from a real hit,
+            # not just quieter.
+            _add(t, _obstacle_clack(), vol=0.35)
+            continue
         mat_a = fighters[i1]["material"]
         mat_b = fighters[i2]["material"]
         _add(t, _hit_sound(mat_a, mat_b, dmg / max(1.0, max_dmg)))
