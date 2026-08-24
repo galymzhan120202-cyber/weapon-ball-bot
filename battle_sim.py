@@ -711,6 +711,15 @@ def get_font(size):
 # between the video renderer and the SFX builder so their timelines line up.
 INTRO_SECONDS = 2.0
 
+# A "cold open" prepended before the countdown even starts: a quick punched-
+# in, flash-cut freeze on the fight's finishing blow (no OUT!/victory text
+# visible yet, so it teases impact without spoiling the winner), the way a
+# lot of viral Shorts/Reels open on a payoff moment before rewinding to "how
+# did we get here" — a first-impression hook for a viewer scrolling past in
+# a muted, autoplaying feed. Shared between the video renderer and the SFX
+# builder so their timelines line up, same pattern as INTRO_SECONDS.
+COLD_OPEN_SECONDS = 0.9
+
 PHYSICS_HZ = 120
 START_HP = 100.0
 
@@ -1669,6 +1678,19 @@ def build_battle_clip(battle):
     n_frames = len(frames)
 
     intro_frames = int(INTRO_SECONDS * fps)
+
+    # Cold-open source frame: the moment the finishing blow lands, before
+    # any "{name} OUT!"/victory text has appeared (those render at later
+    # frame indices), so the tease shows real impact without giving away
+    # who wins. Falls back to the last real hit, or just the final frame,
+    # if a battle somehow has no replay (shouldn't normally happen).
+    if battle.get("replay_range"):
+        cold_open_src_idx = battle["replay_range"][0]
+    elif battle["hit_frame_flags"]:
+        cold_open_src_idx = max(battle["hit_frame_flags"].keys())
+    else:
+        cold_open_src_idx = max(0, n_frames - 1)
+
     TRAIL_STEPS = ((3, 65), (7, 28))  # (frames back, alpha) — kept short/faint
     KO_FADE_FRAMES = 12
 
@@ -1735,6 +1757,29 @@ def build_battle_clip(battle):
     vignette_mask = np.clip(1.0 - 0.20 * np.clip(vdist - 0.55, 0, None) ** 1.4, 0.72, 1.0).astype(np.float32)[:, :, None]
 
     def make_frame(t):
+        if t < COLD_OPEN_SECONDS:
+            # Render the normal frame for the finishing-blow moment (via a
+            # self-recursive call at the shifted timestamp it actually
+            # falls at post-cold-open) and punch it up: a slow zoom-in for
+            # tension, a quick white impact-flash at the very start to grab
+            # a scrolling viewer's eye, and a fade to black right before
+            # the cut into the "3-2-1" countdown.
+            base_t = COLD_OPEN_SECONDS + INTRO_SECONDS + cold_open_src_idx / fps
+            arr = make_frame(base_t).astype(np.float32)
+            zoom = 1.05 + 0.15 * (t / COLD_OPEN_SECONDS)
+            zw, zh = max(1, int(w / zoom)), max(1, int(h / zoom))
+            zx0, zy0 = (w - zw) // 2, (h - zh) // 2
+            zimg = Image.fromarray(arr.astype(np.uint8)).crop((zx0, zy0, zx0 + zw, zy0 + zh)).resize((w, h), Image.BICUBIC)
+            arr = np.array(zimg).astype(np.float32)
+            if t < 0.15:
+                flash_amt = (1.0 - t / 0.15) ** 1.5
+                arr = arr + (255 - arr) * flash_amt * 0.85
+            fade_start = COLD_OPEN_SECONDS - 0.12
+            if t > fade_start:
+                arr = arr * (1 - (t - fade_start) / 0.12)
+            return np.clip(arr, 0, 255).astype(np.uint8)
+
+        t = t - COLD_OPEN_SECONDS
         raw_idx = int(round(t * fps))
         in_intro = raw_idx < intro_frames
         idx = 0 if in_intro else min(n_frames - 1, raw_idx - intro_frames)
@@ -2211,7 +2256,7 @@ def build_battle_clip(battle):
             arr = np.roll(arr, (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
         return arr
 
-    duration = (intro_frames + n_frames) / fps
+    duration = COLD_OPEN_SECONDS + (intro_frames + n_frames) / fps
     clip = VideoClip(make_frame, duration=duration).with_fps(fps)
     return clip
 
@@ -2331,24 +2376,93 @@ def _hit_sound(material_a, material_b, intensity):
     out = np.zeros(n, dtype=np.float32)
     out[: len(a)] += a * (0.75 if material_a != material_b else 1.0)
     out[: len(b)] += b * (0.75 if material_a != material_b else 1.0)
-    return out
+    # A punchier "hook" layer on every hit regardless of material: a sharp
+    # sub-bass transient (like a kick-drum click) at the onset for felt
+    # weight, plus mild soft-clip saturation for bite/aggression — layered
+    # on top of, not replacing, each material's own tonal identity above.
+    punch_dur = 0.05
+    pn = int(SR * punch_dur)
+    pt = np.linspace(0, punch_dur, pn, endpoint=False)
+    punch = np.sin(2 * np.pi * 60 * pt) * np.exp(-pt * 90) * (0.5 + 0.5 * intensity)
+    out[:pn] += punch
+    out = np.tanh(out * 1.35) * 0.9
+    return out.astype(np.float32)
+
+
+def _hook_sting():
+    """A short, punchy attention-grab for the very first instant of the
+    video (during the cold-open flash) — a fast pitch-rising noise
+    whoosh into a sharp low boom, the kind of trailer-style sting meant to
+    register even for a viewer scrolling a muted, autoplaying feed."""
+    dur = 0.4
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    rng = np.random.default_rng(4242)
+    noise = rng.uniform(-1, 1, n)
+    # Rising "whoosh": a slowly-opening low-pass via a rising cutoff proxy
+    # (blend raw noise in more as t increases) plus a rising pitched tone.
+    open_amt = np.clip(t / 0.22, 0, 1)
+    rise_tone = np.sin(2 * np.pi * (200 + 1400 * open_amt) * t)
+    whoosh = (noise * 0.5 + rise_tone * 0.5) * np.clip(1.2 - t / 0.22, 0, 1) * open_amt
+    boom_t = np.maximum(0, t - 0.18)
+    boom = np.sin(2 * np.pi * 68 * boom_t) * np.exp(-boom_t * 9) * (t > 0.18)
+    boom_click = np.exp(-boom_t * 120) * (t > 0.18)
+    sfx = whoosh * 0.7 + boom * 0.9 + boom_click * 0.6
+    return np.tanh(sfx * 1.2).astype(np.float32)
 
 
 def _victory_chime():
-    notes = [523.25, 659.25, 783.99]
-    parts = []
+    """The finale/victory sound — bigger and punchier than the original
+    plain 3-note sine chime, to match this round's "hook" pass on the rest
+    of the audio: a sub-bass impact thump ties the victory banner's
+    appearance to a felt hit, a 4-note rising arpeggio (each note layered
+    with soft overtones, not a bare sine, for a real bell-like richness)
+    resolves into a sustained triumphant chord, capped with a short high
+    shimmer for sparkle."""
+    parts = []  # (start_time, samples)
+
+    thump_dur = 0.18
+    tn = int(SR * thump_dur)
+    tt = np.linspace(0, thump_dur, tn, endpoint=False)
+    thump = np.sin(2 * np.pi * 70 * tt) * np.exp(-tt * 16) * 0.9
+    parts.append((0.0, thump))
+
+    notes = [523.25, 659.25, 783.99, 1046.50]  # C5 E5 G5 C6, rising arpeggio
+    t_cursor = 0.05
     for f in notes:
-        dur = 0.22
+        dur = 0.26
         n = int(SR * dur)
         t = np.linspace(0, dur, n, endpoint=False)
-        env = np.exp(-t * 4)
-        parts.append(np.sin(2 * np.pi * f * t) * env * 0.5)
-    gap = np.zeros(int(SR * 0.05), dtype=np.float32)
-    out = []
-    for p in parts:
-        out.append(p.astype(np.float32))
-        out.append(gap)
-    return np.concatenate(out)
+        env = np.exp(-t * 3.2)
+        tone = (np.sin(2 * np.pi * f * t) * 0.7
+                + np.sin(2 * np.pi * f * 2 * t) * 0.2
+                + np.sin(2 * np.pi * f * 3 * t) * 0.1)
+        parts.append((t_cursor, tone * env * 0.45))
+        t_cursor += 0.11
+
+    chord_dur = 0.6
+    cn = int(SR * chord_dur)
+    ct = np.linspace(0, chord_dur, cn, endpoint=False)
+    cenv = np.exp(-ct * 2.0)
+    chord = sum(np.sin(2 * np.pi * f * ct) for f in notes[:3]) / 3
+    parts.append((t_cursor, chord * cenv * 0.5))
+
+    shimmer_dur = 0.35
+    sn = int(SR * shimmer_dur)
+    st = np.linspace(0, shimmer_dur, sn, endpoint=False)
+    senv = np.exp(-st * 6)
+    shimmer = (np.sin(2 * np.pi * 2093 * st) + np.sin(2 * np.pi * 2637 * st) * 0.7) * senv * 0.15
+    parts.append((t_cursor + 0.05, shimmer))
+
+    total_dur = max(start + len(p) / SR for start, p in parts)
+    n_total = int(total_dur * SR) + 1
+    out = np.zeros(n_total, dtype=np.float32)
+    for start, p in parts:
+        pos = int(start * SR)
+        end = min(n_total, pos + len(p))
+        if end > pos:
+            out[pos:end] += p[: end - pos]
+    return np.tanh(out * 1.1).astype(np.float32)
 
 
 def _beep(freq, dur=0.12, vol=0.5):
@@ -2369,11 +2483,13 @@ def _fight_horn():
 
 
 def build_sfx_array(battle):
-    """Renders the countdown beeps + all clash + victory sounds into one
-    stereo float32 array. Timeline matches build_battle_clip's video exactly:
-    INTRO_SECONDS of countdown first, then the battle itself."""
+    """Renders the cold-open sting + countdown beeps + all clash + victory
+    sounds into one stereo float32 array. Timeline matches
+    build_battle_clip's video exactly: COLD_OPEN_SECONDS tease, then
+    INTRO_SECONDS of countdown, then the battle itself."""
     fps = battle["fps"]
-    duration = INTRO_SECONDS + len(battle["frames"]) / fps
+    T0 = COLD_OPEN_SECONDS + INTRO_SECONDS
+    duration = T0 + len(battle["frames"]) / fps
     n_samples = int(duration * SR) + SR
     buf = np.zeros(n_samples, dtype=np.float32)
 
@@ -2383,17 +2499,22 @@ def build_sfx_array(battle):
         if end > pos:
             buf[pos:end] += sfx[: end - pos] * vol
 
+    # The audio half of the cold-open hook — lands right as the visual
+    # flash does, so a viewer scrolling with sound on registers something
+    # happened even before the countdown starts.
+    _add(0.0, _hook_sting(), vol=0.95)
+
     quarter = INTRO_SECONDS / 4
     for i in range(3):
-        _add(i * quarter, _beep(700, 0.10, 0.55))
-    _add(3 * quarter, _fight_horn())
+        _add(COLD_OPEN_SECONDS + i * quarter, _beep(700, 0.10, 0.55))
+    _add(COLD_OPEN_SECONDS + 3 * quarter, _fight_horn())
 
     fighters = battle["fighters"]
     dmgs = [v[2] for v in battle["hit_frame_flags"].values() if v[5] != "block"]
     max_dmg = max(dmgs) if dmgs else 1.0
 
     for frame_idx, (_, _, dmg, i1, i2, hit_type) in battle["hit_frame_flags"].items():
-        t = INTRO_SECONDS + frame_idx / fps
+        t = T0 + frame_idx / fps
         if hit_type == "block":
             # A handle bump gets its own quiet, distinct "tink" instead of a
             # scaled-down clash sound — audibly different from a real hit,
@@ -2405,22 +2526,22 @@ def build_sfx_array(battle):
         _add(t, _hit_sound(mat_a, mat_b, dmg / max(1.0, max_dmg)))
 
     for frame_idx in battle["obstacle_hit_frames"]:
-        t = INTRO_SECONDS + frame_idx / fps
+        t = T0 + frame_idx / fps
         _add(t, _obstacle_clack(), vol=0.5)
 
     for frame_idx in battle["wall_hit_frames"]:
-        t = INTRO_SECONDS + frame_idx / fps
+        t = T0 + frame_idx / fps
         _add(t, _obstacle_clack(), vol=0.22)
 
     for frame_idx in battle["muzzle_flash_frames"]:
-        t = INTRO_SECONDS + frame_idx / fps
+        t = T0 + frame_idx / fps
         _add(t, _gunshot(), vol=0.7)
 
     for frame_idx in battle["projectile_hit_frames"]:
-        t = INTRO_SECONDS + frame_idx / fps
+        t = T0 + frame_idx / fps
         _add(t, _clang_metal(0.55), vol=0.5)
 
-    finale_t = INTRO_SECONDS + battle["finale_start"] / fps
+    finale_t = T0 + battle["finale_start"] / fps
     _add(finale_t, _victory_chime(), vol=0.9)
 
     peak = np.max(np.abs(buf)) or 1.0

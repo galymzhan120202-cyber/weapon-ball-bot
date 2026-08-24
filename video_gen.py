@@ -19,7 +19,7 @@ import glob
 
 import numpy as np
 
-from battle_sim import simulate_battle, build_battle_clip, build_sfx_array, generate_thumbnail, INTRO_SECONDS, SR as SFX_SR, WEAPON_POOL
+from battle_sim import simulate_battle, build_battle_clip, build_sfx_array, generate_thumbnail, INTRO_SECONDS, COLD_OPEN_SECONDS, SR as SFX_SR, WEAPON_POOL
 
 # UTF-8 кодтеуін орнату консоль үшін
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -138,7 +138,7 @@ def build_duck_envelope(n_samples, sr, battle, depth=0.35, attack=0.03, release=
     release_ramp = np.linspace(depth, 1.0, r_n, dtype=np.float32)
 
     for frame_idx in battle["hit_frame_flags"]:
-        t = INTRO_SECONDS + frame_idx / battle["fps"]
+        t = COLD_OPEN_SECONDS + INTRO_SECONDS + frame_idx / battle["fps"]
         pos = int(t * sr)
 
         a0, a1 = max(0, pos), min(n_samples, pos + a_n)
