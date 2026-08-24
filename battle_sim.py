@@ -430,23 +430,33 @@ def _draw_icon_shape(kind, color, size=170):
     elif kind == "dual_daggers":
         # Two mirrored dagger blades — same blade/guard/handle construction
         # as the single Dagger, just duplicated left and right of center.
-        bw = size * 0.05
+        # Widened from the first pass (bw 0.05->0.075, matching/exceeding
+        # single Dagger's 0.065) — a visual audit found the original too
+        # thin/spindly to clearly read as blades at battle render size.
+        bw = size * 0.075
         for side in (-1, 1):
-            bx = cx + side * size * 0.16
+            bx = cx + side * size * 0.17
             img.alpha_composite(_gradient_fill(size, lambda md, bx=bx: md.polygon(
-                [(bx, size * 0.14), (bx + bw, size * 0.50), (bx - bw, size * 0.50)], fill=255), color), (0, 0))
-            _metal_fuller(d, (bx, size * 0.17), (bx, size * 0.47), max(1, int(bw * 0.25)), color)
-            d.rectangle([bx - size * 0.09, size * 0.50, bx + size * 0.09, size * 0.55], fill=(*STEEL, 255))
-            d.rectangle([bx - bw * 0.6, size * 0.55, bx + bw * 0.6, size * 0.82], fill=(*WOOD, 255))
+                [(bx, size * 0.12), (bx + bw, size * 0.52), (bx - bw, size * 0.52)], fill=255), color), (0, 0))
+            _metal_fuller(d, (bx, size * 0.15), (bx, size * 0.49), max(1, int(bw * 0.25)), color)
+            d.rectangle([bx - size * 0.11, size * 0.52, bx + size * 0.11, size * 0.58], fill=(*STEEL, 255))
+            d.rectangle([bx - bw * 0.6, size * 0.58, bx + bw * 0.6, size * 0.84], fill=(*WOOD, 255))
     elif kind == "war_axe":
-        # A double-bladed axe head: the exact same crescent-blade formula
-        # that fixed Axe's silhouette in round 19, mirrored onto both sides
-        # of the shaft instead of just one.
-        _wood_line(d, (cx, size * 0.92), (cx, size * 0.20), int(size * 0.055))
+        # A double-bladed axe head: the crescent-blade formula that fixed
+        # Axe's silhouette in round 19, mirrored onto both sides of the
+        # shaft. First pass placed the two blade centers only 0.18*size
+        # apart with a 0.26*size radius each — a visual audit found they
+        # fully overlapped into a fused bowtie/hourglass blob with the
+        # handle completely hidden behind them, not reading as an axe at
+        # all (the exact bug class round 19 fixed for the single Axe).
+        # Centers are now far enough apart (0.30*size each side) that each
+        # blade's near edge clears the handle's own width, so the shaft
+        # stays visible between the two blades.
+        _wood_line(d, (cx, size * 0.92), (cx, size * 0.16), int(size * 0.05))
         for side in (-1, 1):
-            bcx = cx + side * size * 0.09
+            bcx = cx + side * size * 0.30
             img.alpha_composite(_gradient_fill(size, lambda md, bcx=bcx, side=side: _crescent_blade(
-                md, bcx, size * 0.24, size * 0.26, size * 0.20, side * size * 0.155), color), (0, 0))
+                md, bcx, size * 0.22, size * 0.24, size * 0.185, side * size * 0.143), color), (0, 0))
     elif kind == "tomahawk":
         # A compact single-side hatchet: Axe's crescent blade, scaled down
         # and set lower on a shorter handle for a one-handed throwing-axe
@@ -1310,15 +1320,25 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
 # every upload can look different with zero extra assets. Picked from a hash
 # of the battle seed, independent of the physics RNG stream.
 
-def _brighten_theme_color(rgb, sat_boost=1.3, val_boost=2.3, val_floor=0.10):
-    """Arena background colors were tuned as a very dark night-battle
-    backdrop — striking on their own, but the user wants the arenas to
-    read as "яркий" (vibrant/bright), not muted. Boosts saturation and
-    lifts brightness in HSV space (preserves hue, so each theme keeps its
-    identity) instead of hand-retuning 16 themes' worth of RGB tuples."""
+def _brighten_theme_color(rgb, val_floor=0.60, val_span=0.30, sat_target=0.40):
+    """Arena backgrounds were originally tuned as a very dark night-battle
+    backdrop; a round-23 pass boosted saturation/brightness multiplicatively
+    but starting from such low raw values that the result was still mostly
+    crushed near-black (measured luminance 2-70 out of 255 across the 16
+    themes) — direct viewer feedback ("make the background a light color,
+    it gets mixed with the weapons") confirmed this wasn't nearly enough. A
+    multiplicative boost off wildly different starting values also produced
+    inconsistent results per theme (Deep Space stayed near-black while
+    Golden Temple got fairly bright). This instead targets an explicit
+    brightness FLOOR (in HSV space, hue preserved so each theme keeps its
+    identity) so every theme lands in a genuinely light range regardless of
+    its original darkness, with only a modest per-theme spread on top of
+    the floor for organic variation. Saturation is pulled toward a lower
+    target too — a light background reads as a soft tinted color, not a
+    neon light source at high brightness/high saturation."""
     h, s, v = colorsys.rgb_to_hsv(*(c / 255 for c in rgb))
-    s = min(1.0, s * sat_boost)
-    v = max(val_floor, min(1.0, v * val_boost + 0.04))
+    v = min(0.94, val_floor + v * val_span)
+    s = min(1.0, max(0.16, sat_target * (0.5 + s)))
     r, g, b = colorsys.hsv_to_rgb(h, s, v)
     return (int(r * 255), int(g * 255), int(b * 255))
 
@@ -1344,7 +1364,7 @@ ARENA_THEMES = [
 
 for _theme in ARENA_THEMES:
     _theme["top"] = _brighten_theme_color(_theme["top"])
-    _theme["bottom"] = _brighten_theme_color(_theme["bottom"], val_boost=1.9)
+    _theme["bottom"] = _brighten_theme_color(_theme["bottom"], val_floor=0.44, val_span=0.24)
 
 
 def pick_arena_theme(seed):
@@ -1636,7 +1656,12 @@ def build_battle_clip(battle):
     gdist = np.sqrt(((gx - light_x) / (w * 0.65)) ** 2 + ((gy - light_y) / (h * 0.5)) ** 2)
     glow_falloff = np.clip(1.0 - gdist, 0.0, 1.0) ** 2.2
     accent = np.array(theme["particle"], dtype=np.float32)
-    grad += glow_falloff[:, :, None] * accent[None, None, :] * 0.4
+    # Weaker than before (was 0.4) — the background gradient itself is now
+    # the light-background fix's main source of brightness (see
+    # _brighten_theme_color), so a glow of the old strength stacked on top
+    # of an already-light base would blow out toward white near the light
+    # source instead of reading as a subtle accent.
+    grad += glow_falloff[:, :, None] * accent[None, None, :] * 0.16
 
     base_bg = Image.fromarray(np.clip(grad, 0, 255).astype(np.uint8), mode="RGB")
 
@@ -1702,7 +1727,12 @@ def build_battle_clip(battle):
     # pays for a cheap numpy multiply, not a re-render.
     vy, vx = np.mgrid[0:h, 0:w].astype(np.float32)
     vdist = np.sqrt(((vx - w / 2) / (w / 2)) ** 2 + ((vy - h / 2) / (h / 2)) ** 2)
-    vignette_mask = np.clip(1.0 - 0.35 * np.clip(vdist - 0.55, 0, None) ** 1.4, 0.55, 1.0).astype(np.float32)[:, :, None]
+    # Softened from the original (0.35 depth, 0.55 floor) now that the
+    # background itself is light — the old vignette strength was tuned
+    # against a near-black base where corner-darkening barely registered;
+    # against a light base it would pull corners back toward the same dark
+    # blending problem the background fix exists to solve.
+    vignette_mask = np.clip(1.0 - 0.20 * np.clip(vdist - 0.55, 0, None) ** 1.4, 0.72, 1.0).astype(np.float32)[:, :, None]
 
     def make_frame(t):
         raw_idx = int(round(t * fps))
@@ -1960,10 +1990,21 @@ def build_battle_clip(battle):
 
         if clean_tag is not None:
             ctx, cty, ct_age, ct_alpha = clean_tag
-            ct_text = "CLEAN HIT!"
-            ctw = d.textlength(ct_text, font=clean_hit_font)
-            ct_y = cty - h * 0.05 - ct_age * 1.6
-            d.text((ctx - ctw / 2, ct_y), ct_text, font=clean_hit_font, fill=(255, 235, 90, ct_alpha), stroke_width=2, stroke_fill=(0, 0, 0, ct_alpha))
+            # A finishing blow is very often also a "clean" hit, and this
+            # tag drifting up from the same spot the "{name} OUT!" banner
+            # occupies made the two pile into illegible overlapping text —
+            # found via a UI audit render, not a viewer report. The KO
+            # banner is the more important message at that exact moment, so
+            # it wins; suppress CLEAN HIT! whenever one is active nearby.
+            near_ko = any(
+                0 <= idx - koi <= KO_FADE_FRAMES and math.hypot(kx - ctx, ky - cty) < h * 0.12
+                for (koi, fi, kx, ky) in battle["ko_events"]
+            )
+            if not near_ko:
+                ct_text = "CLEAN HIT!"
+                ctw = d.textlength(ct_text, font=clean_hit_font)
+                ct_y = cty - h * 0.05 - ct_age * 1.6
+                d.text((ctx - ctw / 2, ct_y), ct_text, font=clean_hit_font, fill=(255, 235, 90, ct_alpha), stroke_width=2, stroke_fill=(0, 0, 0, ct_alpha))
 
         if obs_flash_alpha > 0:
             # a weapon bounced off the static obstacle — give it its own
@@ -2015,6 +2056,13 @@ def build_battle_clip(battle):
             d.ellipse([phx - 6, phy - 6, phx + 6, phy + 6], fill=(255, 250, 220, proj_hit_alpha))
 
         if not in_intro:
+            # A near-simultaneous double KO (two fighters eliminated close
+            # together in position and time — e.g. a mutual finishing
+            # clash) previously drew both "{name} OUT!" banners at the same
+            # spot, piling into illegible overlapping text. Stagger each
+            # additional banner that lands near an already-placed one
+            # further up the screen instead.
+            placed_ko_xy = []
             for koi, fi, kx, ky in battle["ko_events"]:
                 age = idx - koi
                 if age < 0 or age > KO_FADE_FRAMES:
@@ -2022,11 +2070,14 @@ def build_battle_clip(battle):
                 pa = max(0, int(255 * (1 - age / KO_FADE_FRAMES)))
                 if pa <= 0:
                     continue
+                stack = sum(1 for (pkx, pky) in placed_ko_xy if math.hypot(pkx - kx, pky - ky) < h * 0.1)
+                placed_ko_xy.append((kx, ky))
                 r = 20 + age * 4
                 d.ellipse([kx - r, ky - r, kx + r, ky + r], outline=(255, 80, 60, pa), width=4)
                 label = ko_text_template.format(name=fighters[fi]['name'])
                 lw = d.textlength(label, font=ko_font)
-                d.text((kx - lw / 2, ky - r - 26), label, font=ko_font, fill=(255, 110, 90, pa), stroke_width=2, stroke_fill=(0, 0, 0, pa))
+                label_y = ky - r - 26 - stack * (h * 0.032)
+                d.text((kx - lw / 2, label_y), label, font=ko_font, fill=(255, 110, 90, pa), stroke_width=2, stroke_fill=(0, 0, 0, pa))
 
         for i in range(n):
             x, y, ang = st["pos"][i]
@@ -2062,9 +2113,18 @@ def build_battle_clip(battle):
 
         if dmg_popup is not None:
             px, py, _, pa, dmg = dmg_popup
-            dtext = f"-{dmg}"
-            dw = d.textlength(dtext, font=dmg_font)
-            d.text((px - dw / 2, py), dtext, font=dmg_font, fill=(255, 90, 70, pa), stroke_width=2, stroke_fill=(0, 0, 0, pa))
+            # Same overlap problem as CLEAN HIT! above: a finishing blow's
+            # damage number can drift up right into the "{name} OUT!"
+            # banner's territory. Suppress it there too — the OUT! banner
+            # already conveys the moment mattered.
+            near_ko = any(
+                0 <= idx - koi <= KO_FADE_FRAMES and math.hypot(kx - px, ky - py) < h * 0.12
+                for (koi, fi, kx, ky) in battle["ko_events"]
+            )
+            if not near_ko:
+                dtext = f"-{dmg}"
+                dw = d.textlength(dtext, font=dmg_font)
+                d.text((px - dw / 2, py), dtext, font=dmg_font, fill=(255, 90, 70, pa), stroke_width=2, stroke_fill=(0, 0, 0, pa))
 
         if not in_intro and idx >= finale_start:
             prog = min(1.0, (idx - finale_start) / max(1, fps * 0.35))
