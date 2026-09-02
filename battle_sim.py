@@ -109,27 +109,33 @@ _MATERIAL_PHYSICS = {
 # hit when the weapon is aimed tip-first at an opponent, while a graze from
 # any other angle still only offers up the plain body/guard circle.
 ACTIVE_ZONES = {
-    "sword": [(0, -0.72, 0.46)],
-    "katana": [(0, -0.72, 0.46)],
-    "dagger": [(0, -0.72, 0.46)],
-    "kunai": [(0, -0.72, 0.46)],
-    "cleaver": [(0, -0.62, 0.56)],
-    "rapier": [(0, -0.90, 0.38)],
-    "hammer": [(0, -0.58, 0.62)],
-    "warhammer": [(0, -0.55, 0.68)],
-    "mace": [(0, -0.58, 0.62)],
-    "axe": [(0.28, -0.59, 0.55)],
-    "halberd": [(0, -0.85, 0.43), (0.26, -0.56, 0.52)],  # spike tip + blade
-    "scythe": [(0.22, -0.62, 0.55)],
-    "spear": [(0, -0.85, 0.43)],
-    "trident": [(0, -0.85, 0.43)],
-    "staff": [(0, -0.85, 0.43)],
-    "claws": [(0, -0.55, 0.62)],
-    "chainsaw": [(0, -0.42, 0.66)],
-    "pistol": [(0, -0.68, 0.45)],
-    "dual_daggers": [(-0.45, -0.62, 0.42), (0.45, -0.62, 0.42)],  # twin blades
-    "war_axe": [(-0.31, -0.58, 0.46), (0.31, -0.58, 0.46)],  # double-bladed head
-    "tomahawk": [(0.26, -0.60, 0.48)],  # compact single-side blade
+    # r_frac values are deliberately kept in a narrow band (~0.44–0.56): a
+    # weapon's active-zone SIZE decides how often it lands a real hit vs a
+    # no-damage "block", and when heavy blunts had 0.62–0.68 zones while
+    # thin weapons (rapier, spear) had 0.38–0.43, the blunts landed clean
+    # hits on almost every contact and won ~75% of cross-tier fights on
+    # that alone. Reach/offset still varies per weapon silhouette.
+    "sword": [(0, -0.72, 0.50)],
+    "katana": [(0, -0.72, 0.50)],
+    "dagger": [(0, -0.72, 0.50)],
+    "kunai": [(0, -0.72, 0.50)],
+    "cleaver": [(0, -0.62, 0.52)],
+    "rapier": [(0, -0.88, 0.46)],
+    "hammer": [(0, -0.58, 0.52)],
+    "warhammer": [(0, -0.56, 0.54)],
+    "mace": [(0, -0.58, 0.52)],
+    "axe": [(0.28, -0.59, 0.52)],
+    "halberd": [(0, -0.80, 0.40), (0.26, -0.56, 0.44)],  # spike tip + blade
+    "scythe": [(0.22, -0.62, 0.54)],
+    "spear": [(0, -0.82, 0.50)],
+    "trident": [(0, -0.82, 0.50)],
+    "staff": [(0, -0.82, 0.50)],
+    "claws": [(0, -0.55, 0.54)],
+    "chainsaw": [(0, -0.44, 0.56)],
+    "pistol": [(0, -0.68, 0.46)],
+    "dual_daggers": [(-0.45, -0.62, 0.40), (0.45, -0.62, 0.40)],  # twin blades (2 zones -> smaller each)
+    "war_axe": [(-0.31, -0.58, 0.38), (0.31, -0.58, 0.38)],  # double-bladed head (2 zones -> smaller each)
+    "tomahawk": [(0.26, -0.60, 0.50)],  # compact single-side blade
 }
 # Thrown/all-edge weapons — the entire silhouette is a cutting surface, so
 # the main body shape itself is "active" instead of getting a separate zone.
@@ -152,7 +158,7 @@ CLEAN_HIT_BONUS = 1.15
 # structural always-on advantage made them dominate the win-rate stats once
 # guard/active damage split apart — this discount brings their offense back
 # in line without touching their mass/knockback feel.
-WHOLE_BODY_DAMAGE_DISCOUNT = 0.50
+WHOLE_BODY_DAMAGE_DISCOUNT = 0.42
 
 # How hard a power (mass) advantage converts into a per-hit DAMAGE advantage.
 # Damage to a fighter scales with (attacker_power / victim_power) ** this.
@@ -162,7 +168,7 @@ WHOLE_BODY_DAMAGE_DISCOUNT = 0.50
 # weapons to a ~62% win rate and buried light ones near 10%. Softening the
 # exponent keeps "heavy hits harder" legible without making the power stat the
 # whole fight. Physics feel (mass, knockback, recovery) is untouched.
-POWER_DMG_EXPONENT = 0.5
+POWER_DMG_EXPONENT = 0.38
 
 # Critical hit: a real (non-block) exchange has a CRIT_CHANCE roll to land
 # for CRIT_MULT x damage, with its own bigger flash/shake, a "CRITICAL!"
@@ -182,6 +188,14 @@ CRIT_MULT = 2.0
 # ~3%). A parry is never also a crit.
 PARRY_CHANCE = 0.40
 PARRY_KNOCK_MULT = 1.9
+
+# Global multiplier on every ACTIVE_ZONES radius. Bumped above 1.0 so a
+# spinning weapon actually sweeps a damage arc instead of needing to be
+# aimed near-perfectly tip-first: it cuts the share of contacts that land
+# as a no-damage handle "block" (was ~50%), which is what made long
+# stretches of a clip read as two weapons just bouncing off each other.
+# Per-hit damage was lowered to compensate (see `base` in on_hit).
+ACTIVE_ZONE_SCALE = 1.22
 
 
 def _color_dist(c1, c2):
@@ -795,7 +809,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         body.position = (x, y)
         rad = math.radians(angle_deg)
         body.velocity = (math.cos(rad) * speed, math.sin(rad) * speed)
-        body.angular_velocity = rng.uniform(-5.5, 5.5)
+        body.angular_velocity = rng.uniform(-7.5, 7.5)
         shape = pymunk.Circle(body, radius)
         shape.elasticity = elasticity
         # Friction (fighter-vs-fighter clashes only, walls stay at 0 so
@@ -811,10 +825,14 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     spawn_r = min(right_arena - left_arena, bottom_arena - top_arena) * (0.30 if n_fighters <= 2 else 0.33)
     angle_offset = rng.uniform(0, 360)
 
-    # Mass tracks each weapon's "power" stat, so a heavy weapon (Warhammer,
-    # power ~1.4) physically shrugs off a hit that sends a light one (Dagger,
-    # power ~0.8) flying — the collision itself feels like weight, not just
-    # the HP number ticking down.
+    # Physics mass is a COMPRESSED function of the "power" stat, not power
+    # itself. A heavy weapon still shrugs off a hit that sends a light one
+    # flying, but only ~1.4x as hard, not ~1.9x — at the raw ratio a
+    # heavyweight both out-damaged AND couldn't be knocked off a lighter
+    # opponent, and won ~75-80% of cross-tier fights. "power" still drives
+    # the damage ratio (POWER_DMG_EXPONENT) at full strength.
+    def _phys_mass(power):
+        return 0.80 + (power - 0.80) * 0.55
     bodies, shapes, fighter_radii = [], [], []
     # shape -> "active" (a real blade/head/point — deals real damage) or
     # "body" (handle/shaft/guard — bounces but never deals damage on its
@@ -841,7 +859,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         fighter_radius = base_radius * WEAPON_REACH.get(kind, 1.0)
         phys = _MATERIAL_PHYSICS.get(fighters[i]["material"], _MATERIAL_PHYSICS["metal"])
         body, shape = spawn(
-            x, y, aim, speed0, ctype=i + 1, mass=fighters[i]["power"], radius=fighter_radius,
+            x, y, aim, speed0, ctype=i + 1, mass=_phys_mass(fighters[i]["power"]), radius=fighter_radius,
             elasticity=phys["elasticity"], friction=phys["friction"],
         )
         # All of a single fighter's own shapes (body + every active zone,
@@ -878,7 +896,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             # the damage floor 55% of the time vs 28% normally). 0.35 keeps
             # it lighter than a full fighter body (so it still lags/swings
             # with real inertia) without crippling the impulse it can land.
-            head_body = pymunk.Body(mass=0.35, moment=1.0)
+            head_body = pymunk.Body(mass=0.75, moment=1.0)
             head_body.position = (x + chain_len, y)
             # Match the main body's launch velocity so the spring doesn't
             # get yanked taut by a sudden relative-velocity mismatch on the
@@ -886,11 +904,11 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             # rest while its own body rockets off at speed0).
             head_body.velocity = body.velocity
             space.add(head_body)
-            spring = pymunk.DampedSpring(body, head_body, (0, 0), (0, 0), rest_length=chain_len, stiffness=90, damping=4.0)
+            spring = pymunk.DampedSpring(body, head_body, (0, 0), (0, 0), rest_length=chain_len, stiffness=130, damping=4.0)
             space.add(spring)
             chain_bodies[i] = head_body
             chain_springs[i] = spring
-            head_shape = pymunk.Circle(head_body, fighter_radius * 0.32)
+            head_shape = pymunk.Circle(head_body, fighter_radius * 0.50)
             head_shape.elasticity = phys["elasticity"]
             head_shape.friction = phys["friction"]
             head_shape.collision_type = i + 1
@@ -906,7 +924,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             # attribution is unaffected; only shape_role distinguishes them.
             for (ox_frac, oy_frac, r_frac) in ACTIVE_ZONES[kind]:
                 zone_shape = pymunk.Circle(
-                    body, fighter_radius * r_frac,
+                    body, fighter_radius * r_frac * ACTIVE_ZONE_SCALE,
                     offset=(fighter_radius * ox_frac, fighter_radius * oy_frac),
                 )
                 zone_shape.elasticity = phys["elasticity"]
@@ -1000,7 +1018,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             if fi == proj["shooter"]:
                 return True  # never hits its own shooter
             if fi is not None and alive[fi]:
-                dmg = rng.uniform(6.0, 11.0)
+                dmg = rng.uniform(4.0, 7.5)
                 hp[fi] = max(0.0, hp[fi] - dmg)
                 cx_, cy_ = proj["body"].position.x, proj["body"].position.y
                 projectile_hit_log.append((step_counter["n"], cx_, cy_, round(dmg), proj["shooter"], fi))
@@ -1064,7 +1082,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             hit_type = "block"
 
         impulse = arbiter.total_impulse.length
-        base = min(24.0, max(2.5, impulse * 0.028))
+        base = min(17.0, max(1.7, impulse * 0.0145))
         p1, p2 = fighters[i1]["power"], fighters[i2]["power"]
         # A weapon's own spin adds extra bite to the hit it lands — a
         # chainsaw or shuriken caught mid-spin cuts harder than one moving
@@ -1107,9 +1125,21 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
             dy = bodies[i2].position.y - bodies[i1].position.y
             dist = max(1.0, math.hypot(dx, dy))
             ux, uy = dx / dist, dy / dist
-            knock = impulse * 0.55 * (PARRY_KNOCK_MULT if hit_type == "parry" else 1.0)
+            pmult = PARRY_KNOCK_MULT if hit_type == "parry" else 1.0
+            # Momentum component — mass-scaled, so a light weapon is still
+            # flung further than a heavy one (the "weight has weight" read).
+            knock = impulse * 0.34 * pmult
             bodies[i1].apply_impulse_at_world_point((-ux * knock, -uy * knock), (cx, cy))
             bodies[i2].apply_impulse_at_world_point((ux * knock, uy * knock), (cx, cy))
+            # Flat separation — mass-independent, so even a heavyweight is
+            # shoved back off its target. Without this a heavy weapon could
+            # sit on a lighter one and chain hits it couldn't escape, which
+            # was most of why mid/light weapons were losing ~75-80% of the
+            # time to heavies.
+            sep = speed0 * 0.32 * pmult
+            v1, v2 = bodies[i1].velocity, bodies[i2].velocity
+            bodies[i1].velocity = (v1.x - ux * sep, v1.y - uy * sep)
+            bodies[i2].velocity = (v2.x + ux * sep, v2.y + uy * sep)
             _apply_recovery(i1)
             _apply_recovery(i2)
         return True
@@ -1137,16 +1167,36 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     # got hit) is genuinely more exposed for a moment, not just numerically
     # slower. A light weapon gets the opposite: its next lunge comes sooner
     # after any exchange, reflecting a quick recovery.
-    BASE_LUNGE_INTERVAL_STEPS = int(0.95 * PHYSICS_HZ)
-    lunge_strength = speed0 * 0.70
+    # Tempo: fighters lunge often enough that there is almost always an
+    # attack in flight — dead air where two weapons just drift and bounce
+    # is the main thing that makes a clip boring. Per-hit damage is scaled
+    # down to match (see `base` in on_hit) so the extra aggression doesn't
+    # just end fights faster.
+    BASE_LUNGE_INTERVAL_STEPS = int(0.52 * PHYSICS_HZ)
+    lunge_strength = speed0 * 0.72
     max_speed = speed0 * 2.0
     RECOVERY_HEAVY_THRESHOLD = 1.15
     RECOVERY_LIGHT_THRESHOLD = 0.85
 
+    # Closing arena: after ARENA_SHRINK_START_FRAC of the clock the play area
+    # contracts toward its centre, down to ARENA_SHRINK_MIN_SCALE of its
+    # starting size at the buzzer. Fighters are softly shoved back inside the
+    # shrinking box each step; the full-size static walls stay as a hard
+    # backstop. Keeps the finish tight and kills any late-game drifting.
+    ARENA_SHRINK_START_FRAC = 0.40
+    ARENA_SHRINK_MIN_SCALE = 0.58
+
+    def _arena_bounds_at(step):
+        p = step / max_steps
+        s = 1.0 - max(0.0, (p - ARENA_SHRINK_START_FRAC) / (1.0 - ARENA_SHRINK_START_FRAC)) * (1.0 - ARENA_SHRINK_MIN_SCALE)
+        hw = (right_arena - left_arena) / 2 * s
+        hh = (bottom_arena - top_arena) / 2 * s
+        return (center_x - hw, center_y - hh, center_x + hw, center_y + hh)
+
     def _lunge_interval_for(fi):
         p = fighters[fi]["power"]
-        mult = 0.60 + max(0.0, min(1.0, (p - 0.70) / 0.70)) * 0.90
-        return max(int(0.45 * PHYSICS_HZ), int(BASE_LUNGE_INTERVAL_STEPS * mult))
+        mult = 0.72 + max(0.0, min(1.0, (p - 0.70) / 0.70)) * 0.62
+        return max(int(0.30 * PHYSICS_HZ), int(BASE_LUNGE_INTERVAL_STEPS * mult))
 
     next_lunge_step = [rng.randint(int(0.3 * PHYSICS_HZ), _lunge_interval_for(i)) for i in range(n_fighters)]
 
@@ -1244,6 +1294,29 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 step_gap = max(int(0.30 * PHYSICS_HZ), int(step_gap / aggr))
             next_lunge_step[i] = step_counter["n"] + step_gap
 
+        # Soft-clamp each fighter inside the (possibly shrinking) arena box.
+        cl, ct, cr, cb = _arena_bounds_at(step_counter["n"])
+        for i in alive_idx:
+            b = bodies[i]
+            r = fighter_radii[i]
+            px, py = b.position.x, b.position.y
+            vx, vy = b.velocity.x, b.velocity.y
+            bounced = False
+            if px - r < cl:
+                px, vx, bounced = cl + r, abs(vx) + 30, True
+            elif px + r > cr:
+                px, vx, bounced = cr - r, -abs(vx) - 30, True
+            if py - r < ct:
+                py, vy, bounced = ct + r, abs(vy) + 30, True
+            elif py + r > cb:
+                py, vy, bounced = cb - r, -abs(vy) - 30, True
+            if bounced:
+                b.position = (px, py)
+                b.velocity = (vx, vy)
+                if step_counter["n"] - last_wall_flash_step[i] >= WALL_FLASH_COOLDOWN_STEPS:
+                    last_wall_flash_step[i] = step_counter["n"]
+                    wall_hit_log.append((step_counter["n"], px, py))
+
         if step_counter["n"] % steps_per_frame == 0:
             pos = []
             chain_pos = []
@@ -1252,7 +1325,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 pos.append((b.position.x, b.position.y, math.degrees(b.angle)))
                 chain_pos.append((chain_bodies[i].position.x, chain_bodies[i].position.y) if chain_bodies[i] else None)
             proj_snapshot = [(p["body"].position.x, p["body"].position.y, math.degrees(p["body"].velocity.angle)) for p in projectiles]
-            frames.append({"pos": pos, "hp": list(hp), "alive": list(alive), "chain_pos": chain_pos, "projectiles": proj_snapshot})
+            frames.append({"pos": pos, "hp": list(hp), "alive": list(alive), "chain_pos": chain_pos, "projectiles": proj_snapshot, "arena": (cl, ct, cr, cb)})
             frame_idx += 1
 
         if hit_log and hit_log[-1][0] == step_counter["n"]:
@@ -1892,13 +1965,17 @@ def build_battle_clip(battle):
                 alpha = int(30 + 70 * p["depth"] * twinkle)
                 d.ellipse([px - r, py - r, px + r, py + r], fill=(*theme["particle"], alpha))
 
-        d.rounded_rectangle([left, top, right, bottom], radius=18, outline=theme["border"], width=4)
-        for gx in range(left, right, int(w * 0.09)):
-            d.line([(gx, top), (gx, bottom)], fill=theme["grid"], width=1)
-        for gy in range(top, bottom, int(w * 0.09)):
-            d.line([(left, gy), (right, gy)], fill=theme["grid"], width=1)
+        # Arena border follows the per-frame (shrinking) bounds; intro and
+        # any frame without recorded bounds fall back to the full size.
+        _fr_arena = frames[idx].get("arena") if (not in_intro and idx < len(frames)) else None
+        al, atp, ar, ab = (int(v) for v in _fr_arena) if _fr_arena else (left, top, right, bottom)
+        d.rounded_rectangle([al, atp, ar, ab], radius=18, outline=theme["border"], width=4)
+        for gx in range(al, ar, int(w * 0.09)):
+            d.line([(gx, atp), (gx, ab)], fill=theme["grid"], width=1)
+        for gy in range(atp, ab, int(w * 0.09)):
+            d.line([(al, gy), (ar, gy)], fill=theme["grid"], width=1)
 
-        _draw_arena_edge_decor(d, theme.get("edge_kind", "none"), left, top, right, bottom, theme["particle"], t)
+        _draw_arena_edge_decor(d, theme.get("edge_kind", "none"), al, atp, ar, ab, theme["particle"], t)
 
         if obstacle_icon is not None:
             for (ox, oy) in obstacles:
