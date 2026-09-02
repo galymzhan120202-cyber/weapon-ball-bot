@@ -1617,27 +1617,42 @@ def _draw_arena_impact_fx(d, kind, fx, fy, elapsed, alpha, color):
         d.ellipse([fx - rr, fy - rr * 0.5, fx + rr, fy + rr * 0.5], outline=(*color, int(alpha * 0.6)), width=3)
 
 
-def _draw_arena_edge_decor(d, kind, left, top, right, bottom, color, t):
+def _draw_arena_edge_decor(d, kind, left, top, right, bottom, color, t, decor_alpha=1.0):
     """A light per-theme decoration drawn along the arena border every
     frame, so the box itself carries some of the arena's identity, not
-    just the background gradient and grid tint."""
+    just the background gradient and grid tint. `decor_alpha` (0..1) fades
+    the whole thing out — the caller drops it toward 0 as the closing
+    arena shrinks, so a decoration anchored to an edge (the ember floor
+    glow, icicles) doesn't end up as a hard band stranded mid-play-area."""
+    if decor_alpha <= 0.02:
+        return
+
+    def _a(v):
+        return max(0, int(v * decor_alpha))
+
     if kind == "icicles":
         n = 9
         for i in range(n):
             x = left + (right - left) * (i + 0.5) / n
             ln = 10 + 14 * ((i * 37) % 5) / 4.0
-            d.polygon([(x - 5, top), (x + 5, top), (x, top + ln)], fill=(*color, 140))
+            d.polygon([(x - 5, top), (x + 5, top), (x, top + ln)], fill=(*color, _a(140)))
     elif kind == "ember_glow":
+        # Soft gradient fading up from the floor edge instead of one flat
+        # filled band — reads as a glow, not a bar, even mid-screen.
         pulse = 0.5 + 0.5 * math.sin(t * 2.2)
-        glow_h = 10 + pulse * 8
-        d.rectangle([left, bottom - glow_h, right, bottom], fill=(*color, int(50 + 40 * pulse)))
+        glow_h = int(18 + pulse * 12)
+        peak = 22 + 24 * pulse
+        for gy in range(glow_h):
+            av = _a(peak * (1 - gy / glow_h) ** 1.6)
+            if av > 0:
+                d.line([(left, bottom - gy), (right, bottom - gy)], fill=(*color, av))
     elif kind == "circuit":
         seg = 22
         for (cx, cy, sx, sy) in [(left, top, 1, 1), (right, top, -1, 1), (left, bottom, 1, -1), (right, bottom, -1, -1)]:
-            d.line([(cx, cy), (cx + sx * seg, cy)], fill=(*color, 190), width=2)
-            d.line([(cx, cy), (cx, cy + sy * seg)], fill=(*color, 190), width=2)
-            d.ellipse([cx + sx * seg - 3, cy - 3, cx + sx * seg + 3, cy + 3], fill=(*color, 220))
-            d.ellipse([cx - 3, cy + sy * seg - 3, cx + 3, cy + sy * seg + 3], fill=(*color, 220))
+            d.line([(cx, cy), (cx + sx * seg, cy)], fill=(*color, _a(190)), width=2)
+            d.line([(cx, cy), (cx, cy + sy * seg)], fill=(*color, _a(190)), width=2)
+            d.ellipse([cx + sx * seg - 3, cy - 3, cx + sx * seg + 3, cy + 3], fill=(*color, _a(220)))
+            d.ellipse([cx - 3, cy + sy * seg - 3, cx + 3, cy + sy * seg + 3], fill=(*color, _a(220)))
     elif kind == "lightning":
         if int(t * 6) % 7 == 0:
             frame_rng = random.Random(int(t * 6))
@@ -1648,20 +1663,20 @@ def _draw_arena_edge_decor(d, kind, left, top, right, bottom, color, t):
                 xx += frame_rng.uniform(-30, 30)
                 yy += 25
                 pts.append((xx, yy))
-            d.line(pts, fill=(*color, 220), width=2)
+            d.line(pts, fill=(*color, _a(220)), width=2)
     elif kind == "coral_fringe":
         n = 6
         for i in range(n):
             x = left + (right - left) * (i + 0.5) / n
             hh = 14 + (i * 53) % 10
-            d.line([(x, bottom), (x, bottom - hh)], fill=(*color, 160), width=3)
+            d.line([(x, bottom), (x, bottom - hh)], fill=(*color, _a(160)), width=3)
     elif kind == "horizon_silhouette":
         n = 5
         for i in range(n):
             x = left + (right - left) * (i + 0.5) / n
             hh = 8 + (i * 41) % 12
             ww = (right - left) / n * 0.5
-            d.polygon([(x - ww / 2, bottom), (x + ww / 2, bottom), (x, bottom - hh)], fill=(*color, 90))
+            d.polygon([(x - ww / 2, bottom), (x + ww / 2, bottom), (x, bottom - hh)], fill=(*color, _a(90)))
 
 
 def _make_ambient_particles(seed, count, w, h):
@@ -1975,7 +1990,12 @@ def build_battle_clip(battle):
         for gy in range(atp, ab, int(w * 0.09)):
             d.line([(al, gy), (ar, gy)], fill=theme["grid"], width=1)
 
-        _draw_arena_edge_decor(d, theme.get("edge_kind", "none"), al, atp, ar, ab, theme["particle"], t)
+        # Fade the edge decoration out as the arena contracts: full at
+        # <=8% shrink, gone by ~22%, so an edge-anchored motif never ends
+        # up as a hard band stranded in the middle of the play area.
+        _arena_scale = (ar - al) / max(1, right - left)
+        _decor_alpha = max(0.0, min(1.0, (_arena_scale - 0.78) / 0.14))
+        _draw_arena_edge_decor(d, theme.get("edge_kind", "none"), al, atp, ar, ab, theme["particle"], t, _decor_alpha)
 
         if obstacle_icon is not None:
             for (ox, oy) in obstacles:
