@@ -44,7 +44,7 @@ WEAPON_POOL = [
     {"name": "Boomerang", "kind": "boomerang", "color": (190, 140, 75), "power": 0.82, "material": "wood"},
     {"name": "Pistol", "kind": "pistol", "color": (70, 70, 78), "power": 0.74, "material": "metal"},
     {"name": "Dual Daggers", "kind": "dual_daggers", "color": (255, 165, 45), "power": 0.80, "material": "metal"},
-    {"name": "War Axe", "kind": "war_axe", "color": (176, 66, 48), "power": 1.18, "material": "metal"},
+    {"name": "War Axe", "kind": "war_axe", "color": (176, 66, 48), "power": 1.11, "material": "metal"},
     {"name": "Tomahawk", "kind": "tomahawk", "color": (150, 182, 92), "power": 0.90, "material": "metal"},
 ]
 
@@ -125,10 +125,10 @@ ACTIVE_ZONES = {
     "trident": [(0, -0.85, 0.43)],
     "staff": [(0, -0.85, 0.43)],
     "claws": [(0, -0.55, 0.62)],
-    "chainsaw": [(0, -0.35, 0.82)],
+    "chainsaw": [(0, -0.42, 0.66)],
     "pistol": [(0, -0.68, 0.45)],
     "dual_daggers": [(-0.45, -0.62, 0.42), (0.45, -0.62, 0.42)],  # twin blades
-    "war_axe": [(-0.32, -0.58, 0.54), (0.32, -0.58, 0.54)],  # double-bladed head
+    "war_axe": [(-0.31, -0.58, 0.46), (0.31, -0.58, 0.46)],  # double-bladed head
     "tomahawk": [(0.26, -0.60, 0.48)],  # compact single-side blade
 }
 # Thrown/all-edge weapons — the entire silhouette is a cutting surface, so
