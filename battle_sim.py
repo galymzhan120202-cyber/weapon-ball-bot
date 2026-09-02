@@ -152,7 +152,17 @@ CLEAN_HIT_BONUS = 1.15
 # structural always-on advantage made them dominate the win-rate stats once
 # guard/active damage split apart — this discount brings their offense back
 # in line without touching their mass/knockback feel.
-WHOLE_BODY_DAMAGE_DISCOUNT = 0.72
+WHOLE_BODY_DAMAGE_DISCOUNT = 0.50
+
+# How hard a power (mass) advantage converts into a per-hit DAMAGE advantage.
+# Damage to a fighter scales with (attacker_power / victim_power) ** this.
+# At 1.0 a Warhammer (1.38) vs Staff (0.80) dealt/took a ~3x damage ratio
+# every exchange, which — stacked on top of the heavier body also winning the
+# elastic-collision impulse and barely being knocked back — pushed heavy
+# weapons to a ~62% win rate and buried light ones near 10%. Softening the
+# exponent keeps "heavy hits harder" legible without making the power stat the
+# whole fight. Physics feel (mass, knockback, recovery) is untouched.
+POWER_DMG_EXPONENT = 0.5
 
 
 def _color_dist(c1, c2):
@@ -1037,8 +1047,9 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         # with the same impulse but no rotation.
         spin1 = min(0.35, abs(bodies[i1].angular_velocity) * 0.035)
         spin2 = min(0.35, abs(bodies[i2].angular_velocity) * 0.035)
-        d1 = base * (p2 / p1) * (1.0 + spin2) * rng.uniform(0.82, 1.18) * mult_for_d1
-        d2 = base * (p1 / p2) * (1.0 + spin1) * rng.uniform(0.82, 1.18) * mult_for_d2
+        pr = (p2 / p1) ** POWER_DMG_EXPONENT
+        d1 = base * pr * (1.0 + spin2) * rng.uniform(0.82, 1.18) * mult_for_d1
+        d2 = base * (1.0 / pr) * (1.0 + spin1) * rng.uniform(0.82, 1.18) * mult_for_d2
         hp[i1] = max(0.0, hp[i1] - d1)
         hp[i2] = max(0.0, hp[i2] - d2)
 
@@ -1164,6 +1175,15 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 muzzle_flash_log.append((step_counter["n"], sx, sy, math.degrees(fire_ang)))
             next_fire_step[i] = step_counter["n"] + rng.randint(PISTOL_FIRE_MIN_STEPS, PISTOL_FIRE_MAX_STEPS)
 
+        # Late-fight aggression ramp: ~1 in 8 fights used to run the full
+        # max_seconds and time out with >1 fighter still alive (two low-power
+        # weapons trading handle-blocks that never push enough damage
+        # through). Past 55% of the clock the lunge grows stronger and fires
+        # more often, linearly, up to ~1.8x strength / ~0.6x interval at the
+        # buzzer — enough to force the survivors together and break a
+        # block-stall without changing how a normal-length fight feels.
+        progress = step_counter["n"] / max_steps
+        aggr = 1.0 + max(0.0, (progress - 0.55) / 0.45) * 0.8
         alive_idx = [i for i in range(n_fighters) if alive[i]]
         for i in alive_idx:
             if step_counter["n"] < next_lunge_step[i]:
@@ -1177,11 +1197,14 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
                 jitter = math.radians(rng.uniform(-20, 20))
                 ux, uy = dx / dist, dy / dist
                 ux, uy = ux * math.cos(jitter) - uy * math.sin(jitter), ux * math.sin(jitter) + uy * math.cos(jitter)
-                bodies[i].velocity = (bodies[i].velocity.x + ux * lunge_strength, bodies[i].velocity.y + uy * lunge_strength)
+                bodies[i].velocity = (bodies[i].velocity.x + ux * lunge_strength * aggr, bodies[i].velocity.y + uy * lunge_strength * aggr)
                 sp = bodies[i].velocity.length
                 if sp > max_speed:
                     bodies[i].velocity = bodies[i].velocity * (max_speed / sp)
-            next_lunge_step[i] = step_counter["n"] + _lunge_interval_for(i)
+            step_gap = _lunge_interval_for(i)
+            if aggr > 1.0:
+                step_gap = max(int(0.30 * PHYSICS_HZ), int(step_gap / aggr))
+            next_lunge_step[i] = step_counter["n"] + step_gap
 
         if step_counter["n"] % steps_per_frame == 0:
             pos = []
