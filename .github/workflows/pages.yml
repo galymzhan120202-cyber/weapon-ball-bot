@@ -1,0 +1,42 @@
+name: Deploy playable site to Pages
+
+# Repo is public, so Pages is available on the free plan.
+# configure-pages below turns it on the first time this runs.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: [index.html, .github/workflows/pages.yml]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble static site
+        run: |
+          mkdir _site
+          cp index.html _site/
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true          # turn Pages on the first time this runs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4

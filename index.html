@@ -1,0 +1,2212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Weapon Ball Arena</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; background: #05060a; overflow: hidden;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #e8e8ef;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; background: #0a0c14; box-shadow: 0 0 60px rgba(0,0,0,.6); }
+  #hint {
+    position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
+    font-size: 12px; letter-spacing: .5px; opacity: .5; white-space: nowrap;
+    pointer-events: none;
+  }
+  #dl {
+    position: fixed; right: 12px; top: 12px; z-index: 10;
+    background: #2b7; color: #04120a; font-weight: 700; padding: 8px 14px;
+    border-radius: 8px; text-decoration: none; font-size: 13px; display: none;
+  }
+  #fund {
+    position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);
+    z-index: 10; display: none; text-align: center; width: min(92vw, 460px);
+    font-size: 13px; line-height: 1.5;
+  }
+  #fund .goal { color: #cfd6e6; opacity: .85; margin-bottom: 8px; }
+  #fund a {
+    display: inline-block; background: #ffd27a; color: #1a1205; font-weight: 800;
+    padding: 10px 20px; border-radius: 980px; text-decoration: none; font-size: 14px;
+    letter-spacing: .2px;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="1080" height="1920"></canvas></div>
+<div id="hint">TAP / HOLD to thrust &nbsp;·&nbsp; aim with the pointer &nbsp;·&nbsp; R to restart</div>
+<a id="dl" download="weapon-ball-arena.webm">⬇ Download clip</a>
+<div id="fund">
+  <div class="goal">🎯 Help bring Weapon Ball Arena to the App&nbsp;Store &amp; Google&nbsp;Play</div>
+  <a id="fundLink" href="#" target="_blank" rel="noopener">☕ Chip in to the release fund</a>
+</div>
+<script>
+"use strict";
+/* =====================================================================
+   Weapon Ball Arena — single-file HTML5 canvas game (hybrid)
+   - Playable: steer one weapon-ball, outlast AI opponents in a
+     shrinking arena. Last one alive wins.
+   - Director mode (?auto=1&seed=123): all-AI, fully deterministic from
+     the seed, optional MediaRecorder capture for YouTube Shorts.
+   Mechanics (weapon roster, damage formula, arena themes, "lunge" AI)
+   are ported from weapon-ball-bot / battle_sim.py so the tuning work
+   already done there carries straight over.
+   ===================================================================== */
+
+// ---------------------------------------------------------------------
+// URL params / run config
+// ---------------------------------------------------------------------
+const Q = new URLSearchParams(location.search);
+const AUTO      = Q.get("auto") === "1";
+const RECORD    = Q.get("record") === "1";
+const SEED      = (Q.get("seed") != null) ? (parseInt(Q.get("seed"), 10) >>> 0)
+                                          : (Math.random() * 2 ** 31) >>> 0;
+const FORCE_N   = Q.get("n") ? Math.max(2, Math.min(8, parseInt(Q.get("n"), 10))) : null;
+// weapons: ?weapons=sword,axe  — or the thumbnail-style ?a=Sword&b=Axe
+//          (lets a pinned-comment vote pick the next matchup via the URL)
+const PICK_LIST = Q.get("weapons")
+  ? Q.get("weapons").split(",").map(s => s.trim().toLowerCase())
+  : (Q.get("a") && Q.get("b")) ? [Q.get("a").trim().toLowerCase(), Q.get("b").trim().toLowerCase()] : null;
+const MUTED     = AUTO ? (Q.get("sound") !== "1") : (Q.get("mute") === "1");
+const DEBUG     = Q.get("debug") === "1";   // show seed / dev details on screen
+const EXTERNAL  = Q.get("drive") === "ext"; // Node recorder drives the clock via __WBA_TICK__
+
+// Release-fund donation link — shown to real players (never on recorded
+// frames). Ko-fi tips are pay-what-you-want. Empty = hidden.
+const FUND_URL  = "https://ko-fi.com/weaponballarena";
+
+// ---------------------------------------------------------------------
+// Ads — a short video ad between matches, real players only. Provider-
+// agnostic hook: set AD_PROVIDER + AD_GAME_ID once you have an account.
+//   ""            -> ads off (default; nothing loads)
+//   "gamemonetize"-> AD_GAME_ID = your GameMonetize game id (a UUID)
+//   "crazygames"  -> AD_GAME_ID unused; needs the CrazyGames SDK
+// Never runs in AUTO / EXTERNAL (recorder) — the SDK isn't even loaded.
+// ---------------------------------------------------------------------
+const AD_PROVIDER = Q.get("ads") === "0" ? "" : "gamemonetize";  // "" | "gamemonetize" | "crazygames"
+const AD_GAME_ID  = "7b7tf8jlqx6b4inrvvl9d2wnul50y6nv";           // GameMonetize game id
+const AD_MIN_GAP  = 90;      // seconds between ads
+const AD_EVERY    = 2;       // show at most once per N finished matches
+const AD_ENABLED  = !AUTO && !EXTERNAL && !!AD_PROVIDER;
+// match count + last-ad time persist across the per-match page reload
+const adState = {
+  loading: false, ready: false,
+  matches: (() => { try { return parseInt(localStorage.getItem("wba_m") || "0", 10) || 0; } catch (e) { return 0; } })(),
+  last:    (() => { try { return parseInt(localStorage.getItem("wba_ad") || "0", 10) || 0; } catch (e) { return 0; } })(),
+};
+
+(function bootAdSdk() {
+  if (!AD_ENABLED) return;
+  try {
+    if (AD_PROVIDER === "gamemonetize") {
+      window.SDK_OPTIONS = {
+        gameId: AD_GAME_ID, prefixAds: false,
+        onEvent: (a) => { if (a && (a.name === "SDK_READY" || a.name === "SDK_GAME_START")) adState.ready = true; },
+      };
+      const s = document.createElement("script");
+      s.src = "https://api.gamemonetize.com/sdk.js"; s.async = true;
+      s.onerror = () => { adState.ready = false; };
+      document.head.appendChild(s);
+    } else if (AD_PROVIDER === "crazygames") {
+      const s = document.createElement("script");
+      s.src = "https://sdk.crazygames.com/crazygames-sdk-v3.js"; s.async = true;
+      s.onload = () => {
+        try { window.CrazyGames.SDK.init().then(() => { adState.ready = true; }).catch(() => {}); }
+        catch (e) {}
+      };
+      document.head.appendChild(s);
+    }
+  } catch (e) { /* ads are best-effort */ }
+})();
+
+// Play a between-match ad if one is due, then call `done`. Never blocks:
+// a stuck/failed ad falls through after a short timeout.
+function maybeShowAd(done) {
+  const now = Date.now();
+  const due = AD_ENABLED && adState.ready && !adState.loading
+    && adState.matches > 0 && adState.matches % AD_EVERY === 0
+    && (now - adState.last) > AD_MIN_GAP * 1000;
+  if (!due) { done(); return; }
+  adState.loading = true;
+  let fired = false;
+  const finish = () => {
+    if (fired) return; fired = true;
+    clearTimeout(guard);
+    adState.loading = false;
+    try { localStorage.setItem("wba_ad", String(Date.now())); } catch (e) {}
+    done();
+  };
+  const guard = setTimeout(finish, 12000);
+  try {
+    if (AD_PROVIDER === "gamemonetize" && window.sdk && window.sdk.showBanner) {
+      const p = window.sdk.showBanner();
+      if (p && p.then) p.then(finish, finish); else setTimeout(finish, 4000);
+    } else if (AD_PROVIDER === "crazygames" && window.CrazyGames && window.CrazyGames.SDK) {
+      window.CrazyGames.SDK.ad.requestAd("midgame", { adFinished: finish, adError: finish });
+    } else { finish(); }
+  } catch (e) { finish(); }
+}
+
+// ---------------------------------------------------------------------
+// Playable-mode menu state (mode + fighter count + weapon picks).
+// Ignored in AUTO / EXTERNAL (recorder) runs. Rebuilt each time the
+// player hits START. `buttons` is repopulated every menu frame for
+// pointer hit-testing.
+// ---------------------------------------------------------------------
+const MENU = {
+  screen: "home",           // "home" | "weapons"
+  pickFor: "a",             // which slot the weapons grid is choosing
+  mode: "play",             // "play" (you steer fighter 0) | "watch" (all AI)
+  n: 2,                     // fighter count 2..4
+  pickA: null,              // your weapon kind, null = random
+  pickB: null,              // opponent kind, null = random
+  buttons: [],
+};
+
+const W = 1080, H = 1920;
+const DT = 1 / 120;                 // fixed physics step (determinism)
+const FPS = 60;                     // render / capture frame rate
+let   START_HP = 100;               // `let`: a MUTATOR may scale it before the World is built
+const INTRO_SECONDS = 3.0;          // 3 · 2 · 1 · FIGHT! countdown
+const COLD_OPEN = 0;                // reserved (battle_sim has a 0.9s hook)
+const BATTLE_MAX_SECONDS = 34;
+const BATTLE_MIN_SECONDS = 12;
+const TRAIL_LEN = 9;               // motion-trail samples per fighter
+
+// ---------------------------------------------------------------------
+// Seeded RNG (mulberry32) — every random draw in the sim goes through
+// one of these so a seed fully reproduces a match.
+// ---------------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hashStr(s) { let h = 2166136261 >>> 0; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+const rng      = mulberry32(SEED);
+const critRng  = mulberry32(hashStr(SEED + "crit"));
+const parryRng = mulberry32(hashStr(SEED + "parry"));
+const rnd  = (a, b) => a + (b - a) * rng();
+const rndi = (a, b) => Math.floor(rnd(a, b + 1));
+function pick(arr) { return arr[Math.floor(rng() * arr.length)]; }
+function sample(arr, k) { const p = arr.slice(); for (let i = p.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; } return p.slice(0, k); }
+function weightedPick(entries) { // [[val,w],...]
+  let tot = 0; for (const e of entries) tot += e[1];
+  let r = rng() * tot;
+  for (const e of entries) { if ((r -= e[1]) <= 0) return e[0]; }
+  return entries[entries.length - 1][0];
+}
+
+// ---------------------------------------------------------------------
+// Weapon roster (ported subset of battle_sim.WEAPON_POOL)
+//   power    -> damage ratio driver (compressed by POWER_DMG_EXPONENT)
+//   material -> collision feel (elasticity / friction)
+//   reach    -> effective body radius multiplier
+//   zone     -> active damage point(s), local offset (x,y) + radius,
+//               in units of the fighter's own collision radius.
+//               y<0 points toward the drawn tip. null => whole body active.
+// ---------------------------------------------------------------------
+const MAT = {
+  metal:      { elasticity: 1.00, friction: 0.20 },
+  mechanical: { elasticity: 0.92, friction: 0.34 },
+  blunt:      { elasticity: 0.78, friction: 0.38 },
+  wood:       { elasticity: 0.90, friction: 0.30 },
+  whip:       { elasticity: 0.70, friction: 0.44 },
+};
+const ZONE_SCALE = 1.22;
+const ROSTER = [
+  { name: "Sword",       kind: "sword",    color: "#e1e1e8", power: 1.05, material: "metal",      reach: 1.00, zone: [[0, -0.72, 0.50]] },
+  { name: "Katana",      kind: "katana",   color: "#f0f0f8", power: 1.12, material: "metal",      reach: 1.05, zone: [[0, -0.72, 0.50]] },
+  { name: "Axe",         kind: "axe",      color: "#d65c44", power: 1.05, material: "metal",      reach: 0.95, zone: [[0.28, -0.59, 0.52]] },
+  { name: "Hammer",      kind: "hammer",   color: "#9696a0", power: 1.08, material: "blunt",      reach: 0.85, zone: [[0, -0.58, 0.52]] },
+  { name: "Warhammer",   kind: "warhammer",color: "#788296", power: 1.10, material: "blunt",      reach: 1.05, zone: [[0, -0.56, 0.54]] },
+  { name: "Spear",       kind: "spear",    color: "#60ce94", power: 1.02, material: "metal",      reach: 1.25, zone: [[0, -0.82, 0.50]] },
+  { name: "Trident",     kind: "trident",  color: "#46bed2", power: 1.06, material: "metal",      reach: 1.22, zone: [[0, -0.82, 0.50]] },
+  { name: "Dagger",      kind: "dagger",   color: "#eccd46", power: 1.06, material: "metal",      reach: 0.72, zone: [[0, -0.72, 0.50]] },
+  { name: "Kunai",       kind: "kunai",    color: "#c8c8d2", power: 1.06, material: "metal",      reach: 0.70, zone: [[0, -0.72, 0.50]] },
+  { name: "Mace",        kind: "mace",     color: "#b064d6", power: 1.13, material: "blunt",      reach: 0.85, zone: [[0, -0.58, 0.52]] },
+  { name: "Flail",       kind: "flail",    color: "#d28c3c", power: 1.08, material: "blunt",      reach: 0.95, zone: [[0, -0.86, 0.46]] },
+  { name: "Nunchaku",    kind: "nunchaku", color: "#8c5a32", power: 1.07, material: "wood",       reach: 0.90, zone: [[0, -0.86, 0.44]] },
+  { name: "Whip",        kind: "whip",     color: "#b43c3c", power: 1.10, material: "whip",       reach: 0.95, zone: [[0, -0.92, 0.42]] },
+  { name: "Claws",       kind: "claws",    color: "#e6e6eb", power: 1.10, material: "metal",      reach: 0.75, zone: [[0, -0.55, 0.54]] },
+  { name: "Scythe",      kind: "scythe",   color: "#48bee2", power: 1.08, material: "metal",      reach: 1.15, zone: [[0.22, -0.62, 0.54]] },
+  { name: "Chainsaw",    kind: "chainsaw", color: "#e6be28", power: 0.78, material: "mechanical", reach: 1.00, zone: [[0, -0.44, 0.56]] },
+  { name: "Staff",       kind: "staff",    color: "#aa82dc", power: 1.12, material: "wood",       reach: 1.20, zone: [[0, -0.82, 0.50]] },
+  { name: "Shuriken",    kind: "shuriken", color: "#d23c5a", power: 0.90, material: "metal",      reach: 0.72, zone: [[0, -0.2, 0.7]] },
+  { name: "Rapier",      kind: "rapier",   color: "#ebebf0", power: 1.06, material: "metal",      reach: 1.15, zone: [[0, -0.88, 0.46]] },
+  { name: "Halberd",     kind: "halberd",  color: "#c8643c", power: 1.10, material: "metal",      reach: 1.25, zone: [[0, -0.80, 0.40], [0.26, -0.56, 0.44]] },
+  { name: "Cleaver",     kind: "cleaver",  color: "#d25a5a", power: 1.10, material: "metal",      reach: 0.85, zone: [[0, -0.62, 0.52]] },
+  { name: "Boomerang",   kind: "boomerang",color: "#be8c4b", power: 0.92, material: "wood",       reach: 0.90, zone: [[0, -0.2, 0.7]] },
+  { name: "War Axe",     kind: "war_axe",  color: "#b04230", power: 1.08, material: "metal",      reach: 1.05, zone: [[-0.31, -0.58, 0.38], [0.31, -0.58, 0.38]] },
+  { name: "Tomahawk",    kind: "tomahawk", color: "#96b65c", power: 1.06, material: "metal",      reach: 0.82, zone: [[0.26, -0.60, 0.50]] },
+  { name: "Dual Daggers",kind: "dual_daggers", color: "#ffa52d", power: 1.08, material: "metal",  reach: 0.80, zone: [[-0.45, -0.62, 0.40], [0.45, -0.62, 0.40]] },
+  { name: "Pistol",      kind: "pistol",   color: "#46464e", power: 0.82, material: "metal",      reach: 0.80, zone: [[0, -0.68, 0.46]] },
+];
+
+// damage-model constants (ported). A few are `let` because a per-match
+// MUTATOR (rolled from the seed, see below) can retune them before the
+// World is built — the roll happens up front so determinism is intact.
+const POWER_DMG_EXPONENT = 0.32;   // balance pass 3: compress the power spread
+const ACTIVE_DAMAGE_MULT  = 1.15;
+const GUARD_DAMAGE_MULT    = 0.28;
+const CLEAN_HIT_BONUS      = 1.15;
+const WHOLE_BODY_DISCOUNT  = 0.42;
+let   CRIT_CHANCE = 0.10, CRIT_MULT = 2.0;
+let   PARRY_CHANCE = 0.40; const PARRY_KNOCK_MULT = 1.9;
+let   BASE_DMG = 3.8;          // per clean exchange before ratios (tuned for 12-28s fights)
+const HIT_COOLDOWN = 0.22;     // s between damage events for a pair
+let   DMG_RAMP_IN = 2.2;       // s of fight over which damage scales 0.5 -> 1.0
+const DMG_RAMP_LATE = 22;      // s after which damage scales up toward 1.6 (break stalemates)
+let   SHRINK_MULT   = 1;       // mutator: arena closes this much faster
+let   ELASTIC_BONUS = 0;       // mutator: added to collision elasticity (bouncier)
+let   FRICTION_MULT = 1;       // mutator: scales material friction
+let   REGEN_PER_SEC = 0;       // mutator: HP regenerated per second while alive
+let   HIT_COOLDOWN_MULT = 1;   // weapon identity: faster/slower re-hit
+let   KNOCKBACK_MULT = 1;      // weapon identity: heavier shove on hit
+let   DRAG = 0.18;             // per-second velocity damping (ICE hazard lowers it)
+
+// ---------------------------------------------------------------------
+// Arena themes (ported subset)
+// ---------------------------------------------------------------------
+const THEMES = [
+  { name: "Midnight Arena",   bg: "#0b1020", grid: "#1b2748", accent: "#5aa0ff", particle: "#6f8fff" },
+  { name: "Neon City",        bg: "#12071c", grid: "#3a1550", accent: "#ff3ec8", particle: "#ff7ae0" },
+  { name: "Lava Pit",         bg: "#1c0a05", grid: "#4a1608", accent: "#ff7a2f", particle: "#ffb057" },
+  { name: "Ice Cave",         bg: "#071620", grid: "#12455a", accent: "#66e0ff", particle: "#a8f0ff" },
+  { name: "Cyber Grid",       bg: "#04140f", grid: "#0c4030", accent: "#2effa0", particle: "#7affce" },
+  { name: "Deep Space",       bg: "#05060f", grid: "#191b3a", accent: "#9a7dff", particle: "#c0b0ff" },
+  { name: "Toxic Lab",        bg: "#0c1405", grid: "#2c4a0c", accent: "#b6ff2f", particle: "#d7ff7a" },
+  { name: "Blood Moon",       bg: "#160608", grid: "#4a1016", accent: "#ff4655", particle: "#ff8a94" },
+  { name: "Sunset Coliseum",  bg: "#1e0f04", grid: "#5a2c10", accent: "#ff9d3c", particle: "#ffc47a" },
+  { name: "Volcanic Forge",   bg: "#180804", grid: "#4a1c0a", accent: "#ff5a2f", particle: "#ff9a5a" },
+  { name: "Frozen Peak",      bg: "#0a141c", grid: "#1e3a4a", accent: "#8fd8ff", particle: "#cdeeff" },
+  { name: "Golden Temple",    bg: "#161006", grid: "#4a3810", accent: "#ffcf4a", particle: "#ffe89a" },
+  { name: "Storm Clouds",     bg: "#0c0f14", grid: "#26303c", accent: "#9fb4d6", particle: "#cdd9ec" },
+  { name: "Coral Reef",       bg: "#04141a", grid: "#0c4048", accent: "#2fe0d0", particle: "#8af0e6" },
+  { name: "Desert Dunes",     bg: "#1a1206", grid: "#4a3616", accent: "#e6b45a", particle: "#f4d79a" },
+  { name: "Radioactive Waste",bg: "#0a1006", grid: "#2a4010", accent: "#8aff2f", particle: "#c0ff7a" },
+];
+
+// ---------------------------------------------------------------------
+// MUTATORS — a per-match rule twist, rolled from the seed (~45% of
+// matches get one). Each `apply()` retunes the `let` knobs above; a few
+// also reshape the fighters once the World exists via `world(w)`.
+// Rolled here, up front, so "same seed => same fight" still holds.
+// ---------------------------------------------------------------------
+const MUTATORS = [
+  { id: "sudden_death", name: "SUDDEN DEATH", tint: "#ff4655",
+    blurb: "Half HP. No warm-up. Someone dies fast.",
+    apply() { START_HP *= 0.5; DMG_RAMP_IN = 0.35; BASE_DMG *= 1.05; } },
+  { id: "glass_cannon", name: "GLASS CANNON", tint: "#ffcf4a",
+    blurb: "Everyone hits like a truck and folds like paper.",
+    apply() { START_HP *= 0.62; BASE_DMG *= 1.42; } },
+  { id: "instakill", name: "ONE-HIT KO", tint: "#ff2f4a",
+    blurb: "One clean strike ends it. Don't blink.",
+    apply() { BASE_DMG *= 5.5; CRIT_CHANCE = 0; PARRY_CHANCE = 0.5; DMG_RAMP_IN = 0.5; } },
+  { id: "blade_storm", name: "BLADE STORM", tint: "#ff7a2f",
+    blurb: "Criticals everywhere.",
+    apply() { CRIT_CHANCE = 0.34; CRIT_MULT = 2.4; } },
+  { id: "low_gravity", name: "LOW GRAVITY", tint: "#66e0ff",
+    blurb: "Bouncy. Chaotic. Physics off the leash.",
+    apply() { ELASTIC_BONUS = 0.15; FRICTION_MULT = 0.4; } },
+  { id: "fast_storm", name: "FAST STORM", tint: "#ff3ec8",
+    blurb: "The arena slams shut twice as fast.",
+    apply() { SHRINK_MULT = 2.1; } },
+  { id: "regen", name: "REGENERATION", tint: "#2effa0",
+    blurb: "Both heal — only clean hits stick.",
+    apply() { REGEN_PER_SEC = 3.6; BASE_DMG *= 1.18; } },
+  { id: "giants", name: "GIANT vs GOBLIN", tint: "#e6b45a",
+    blurb: "One giant. One goblin. Can David win?",
+    apply() {},
+    world(w) {
+      const L = w.fighters;
+      // biggest-index/last spawned = giant, first = goblin (deterministic)
+      const giant = L[L.length - 1], goblin = L[0];
+      for (const f of L) f._role = "";
+      giant._baseR *= 1.62; giant.mass *= 1.9; giant.maxHp *= 1.7; giant.hp = giant.chipHp = giant.maxHp; giant._role = "GIANT";
+      goblin._baseR *= 0.66; goblin.mass *= 0.62; goblin.maxHp *= 0.72; goblin.hp = goblin.chipHp = goblin.maxHp; goblin._role = "GOBLIN";
+    } },
+];
+const mutRng = mulberry32(hashStr(SEED + "mutator"));
+const MUT = (Q.get("mut") != null)
+  ? (Q.get("mut") === "0" ? null : MUTATORS.find(m => m.id === Q.get("mut")) || null)
+  : (mutRng() < 0.45 ? MUTATORS[Math.floor(mutRng() * MUTATORS.length)] : null);
+if (MUT) MUT.apply();
+
+// ---------------------------------------------------------------------
+// PICKUPS — a glowing orb drops into the arena mid-fight; first ball to
+// touch it gets a short buff. The single biggest "comeback moment" and
+// comment generator. Spawn times / places / types are seed-driven.
+// ---------------------------------------------------------------------
+const PICKUP = {
+  rage:    { name: "RAGE",    color: "#ff4655", glyph: "R", desc: "2× damage" },
+  shield:  { name: "SHIELD",  color: "#5aa0ff", glyph: "S", desc: "blocks 3 hits" },
+  heal:    { name: "HEAL",    color: "#2effa0", glyph: "+", desc: "+35 HP" },
+  berserk: { name: "BERSERK", color: "#ffcf4a", glyph: "B", desc: "1.7× speed" },
+  bomb:    { name: "BOMB",    color: "#ff7a2f", glyph: "X", desc: "next hit explodes" },
+};
+const PICKUP_IDS = Object.keys(PICKUP);
+const PICKUPS_ON = Q.get("pickups") !== "0";
+const pickRng = mulberry32(hashStr(SEED + "pickup"));
+
+// ---------------------------------------------------------------------
+// ARENA HAZARDS — one per theme (rolled ~58%). Visual variety + swing
+// moments so 90 fights a month don't blur together. Seed-driven.
+// ---------------------------------------------------------------------
+const THEME_HAZARD = {
+  "Lava Pit": "pit", "Volcanic Forge": "pit", "Radioactive Waste": "pit",
+  "Cyber Grid": "pegs", "Neon City": "pegs", "Midnight Arena": "pegs",
+  "Toxic Lab": "saw", "Deep Space": "saw", "Golden Temple": "saw",
+  "Storm Clouds": "wind", "Desert Dunes": "wind", "Sunset Coliseum": "wind",
+  "Ice Cave": "ice", "Frozen Peak": "ice",
+};
+const HAZARD_NAME = { pit: "LAVA PIT", pegs: "BUMPERS", saw: "SAW BLADE", wind: "CROSSWIND", ice: "ICE FLOOR" };
+const HAZARDS_ON = Q.get("hz") !== "0";
+const hazRng = mulberry32(hashStr(SEED + "hazard"));
+
+// ---------------------------------------------------------------------
+// WEAPON IDENTITY — per-kind behaviour so "Chainsaw vs Rapier" plays
+// nothing like "Axe vs Sword". Checked at the point of use.
+//   cd    : re-hit cooldown multiplier (fast daggers / slow hammers)
+//   knock : extra shove on a clean hit
+//   crit/parry : added chance when this weapon is involved
+//   dot   : chainsaw grind — damage/sec while in contact
+//   pull  : reel the victim in on a clean hit (whip family)
+//   proj  : this weapon throws a projectile {speed,dmg,cd,returns,col,spin}
+// ---------------------------------------------------------------------
+const TRAIT = {
+  // balance pass 1 (2026-09-04, from a 180-match base sweep): ranged +
+  // chainsaw + hammer-knock were dominating, fast/low-power weapons were
+  // losing 100% — projectiles and DoT nerfed hard, knock brought down.
+  // balance pass 3: chainsaw DoT + ranged still 100%, daggers still ~0%.
+  // DoT is now a tiny burst, projectiles are chip-only, the dagger "faster
+  // re-hit" trait was hurting them (short reach) so it's dropped and their
+  // power carries it. Blunt knock removed — cosmetic only via the elastic
+  // collision now.
+  chainsaw:     { dot: 3, cd: 1.6 },
+  hammer:       { cd: 1.1 },
+  warhammer:    { cd: 1.15 },
+  mace:         { cd: 1.08 },
+  flail:        { cd: 1.05 },
+  rapier:       { crit: 0.10, parry: 0.12 },
+  katana:       { crit: 0.09, parry: 0.09 },
+  whip:         { pull: 240 },
+  pistol:       { proj: { speed: 1500, dmg: 4, cd: 5.0, returns: false, col: "#ffd27a", spin: 0 } },
+  shuriken:     { proj: { speed: 1150, dmg: 4, cd: 3.2, returns: false, col: "#ff4d6a", spin: 46 } },
+  boomerang:    { proj: { speed: 950,  dmg: 4, cd: 3.2, returns: true,  col: "#e0b070", spin: 34 } },
+};
+
+// ---------------------------------------------------------------------
+// small vec + color helpers
+// ---------------------------------------------------------------------
+const len = (x, y) => Math.hypot(x, y);
+function norm(x, y) { const l = Math.hypot(x, y) || 1; return [x / l, y / l]; }
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+function hexToRgb(hex) {
+  const c = hex.replace("#", "");
+  return [parseInt(c.substr(0, 2), 16), parseInt(c.substr(2, 2), 16), parseInt(c.substr(4, 2), 16)];
+}
+function rgbToHex(r, g, b) {
+  return "#" + [r, g, b].map(v => clamp(Math.round(v), 0, 255).toString(16).padStart(2, "0")).join("");
+}
+function hslToRgb(h, s, l) {
+  const k = n => (n + h * 12) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [f(0) * 255, f(8) * 255, f(4) * 255];
+}
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d) {
+    if (mx === r) h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6; if (h < 0) h += 1;
+  }
+  const l = (mx + mn) / 2;
+  const s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+  return [h, s, l];
+}
+function mixHex(hexA, hexB, t) {
+  const a = hexToRgb(hexA), b = hexToRgb(hexB);
+  return rgbToHex(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t);
+}
+// keep a weapon's identity tint but force a screen-distinct, readable hue
+function distinctTint(hex, hue) {
+  const [, , l0] = rgbToHsl(...hexToRgb(hex));
+  const target = rgbToHex(...hslToRgb(hue, 0.60, clamp(l0 * 0.5 + 0.32, 0.42, 0.66)));
+  return mixHex(hex, target, 0.62);
+}
+
+// ---------------------------------------------------------------------
+// World / simulation
+// ---------------------------------------------------------------------
+class Fighter {
+  constructor(def, x, y) {
+    Object.assign(this, def);
+    this.x = x; this.y = y; this.vx = 0; this.vy = 0;
+    this.angle = rnd(0, Math.PI * 2);
+    this.spin = rnd(-6, 6);
+    this.hp = START_HP; this.chipHp = START_HP; this.maxHp = START_HP; this.alive = true;
+    this.kills = 0;
+    this._role = "";                                  // GIANT / GOBLIN tag (giants mutator)
+    this.buff = null;                                 // active pickup buff {id,name,t,...}
+    this.shield = 0;                                  // hits the SHIELD pickup still absorbs
+    this.mass = 0.80 + (this.power - 0.80) * 0.55;   // compressed (ported)
+    this.hitFlash = 0; this.scale = 1;
+    this.lungeCd = rnd(0.6, 1.6);
+    this._projCd = TRAIT[this.kind] && TRAIT[this.kind].proj ? rnd(1.2, 2.4) : 0;
+    this._dot = null;  // {by, dps, t} chainsaw grind
+    this.eDmg = 0;      // accumulated damage popup
+    this.dmgPopT = 0;
+    this.trail = [];   // recent {x,y} for the motion trail
+    this.tint = this.color;   // screen-distinct color, set by World
+  }
+  get baseR() { return this._baseR; }
+}
+
+class World {
+  constructor() {
+    this.t = 0;
+    this.clock = 0;                  // monotonic output-time clock (never reset) — audio-log timestamps
+    this.audioLog = [];             // [{t, type, ...}] for the Node-side sfx/music mix
+    this.state = "intro";            // intro -> fight -> over
+    this.theme = pick(THEMES);
+    this.winner = null;
+    this.finishText = "";
+    this.pairCd = new Map();         // "i,j" -> cooldown
+    this.sparks = [];
+    this.rings = [];                 // expanding impact rings
+    this.shards = [];               // weapon-piece debris from a KO
+    this.confetti = [];            // winner-card confetti
+    this.projectiles = [];        // pistol / shuriken / boomerang shots
+    this.shakes = 0;
+    this.flash = 0;
+    this.hitstop = 0;               // brief freeze on big hits (juice)
+    this.slowmo = 0;               // seconds of slow-motion left (final-KO beat)
+    this.zoom = 1;                  // render-side camera punch on finish
+    this.callout = null;            // {txt, t} big screen callout
+    this.killCount = 0; this.lastKillT = -9;
+
+    // roster selection — URL picks (recorder / share links) first, then the
+    // playable-mode MENU choices, then a weighted random matchup.
+    const useMenu = !AUTO && !EXTERNAL;
+    let picked = null;
+    if (PICK_LIST) {
+      const chosen = PICK_LIST.map(k => ROSTER.find(w => w.kind === k || w.name.toLowerCase() === k)).filter(Boolean);
+      if (chosen.length >= 2) picked = chosen.slice(0, 8);
+    } else if (useMenu && (MENU.pickA || MENU.pickB)) {
+      const want = MENU.n;
+      const fixed = [MENU.pickA, MENU.pickB].map(k => k && ROSTER.find(w => w.kind === k)).filter(Boolean);
+      const pool = ROSTER.filter(w => !fixed.includes(w));
+      picked = fixed.concat(sample(pool, Math.max(0, want - fixed.length))).slice(0, want);
+    }
+    if (picked) this.defs = picked;
+    else this.defs = sample(ROSTER, FORCE_N || (useMenu ? MENU.n : weightedPick([[2, 55], [3, 28], [4, 17]])));
+    const n = this.defs.length;
+    this.n = n;
+
+    // arena box
+    this.cx = W / 2; this.cy = H * 0.56;
+    this.arenaR0 = Math.min(W, H) * 0.44;
+    this.arenaR = this.arenaR0;
+    this.arenaRmin = this.arenaR0 * 0.42;
+
+    // sizing by fighter count (ported spirit of RADIUS_BY_N)
+    const baseR = ({ 2: 62, 3: 54, 4: 47, 5: 42, 6: 38, 7: 35, 8: 33 })[n] || 40;
+
+    this.fighters = this.defs.map((def, i) => {
+      const ang = (i / n) * Math.PI * 2 + rnd(0, Math.PI * 2);
+      const spawnR = this.arenaR0 * 0.62;
+      const f = new Fighter(def, this.cx + Math.cos(ang) * spawnR, this.cy + Math.sin(ang) * spawnR);
+      f._baseR = baseR * def.reach;
+      const speed0 = Math.min(W, H) * 0.16;
+      const [ax, ay] = norm(this.cx - f.x, this.cy - f.y);
+      f.vx = ax * speed0; f.vy = ay * speed0;
+      f.idx = i;
+      return f;
+    });
+
+    // screen-distinct colors: evenly spaced hues (seed-rotated) so a
+    // Sword / Rapier / Claws fight isn't three identical white balls,
+    // while each keeps a hint of its own identity tint.
+    const hue0 = rng();
+    this.fighters.forEach((f, i) => { f.tint = distinctTint(f.color, (hue0 + i / n) % 1); });
+
+    // drifting ambient particles (theme-tinted), purely decorative
+    this.ambient = [];
+    for (let i = 0; i < 46; i++) {
+      this.ambient.push({
+        x: rnd(0, W), y: rnd(0, H),
+        vx: rnd(-14, 14), vy: rnd(-22, -6),
+        r: rnd(1.5, 4.5), a: rnd(0.06, 0.22),
+      });
+    }
+
+    // player is fighter 0 unless AUTO
+    this.playerIdx = (AUTO || EXTERNAL || MENU.mode === "watch") ? -1 : 0;
+    this.hits = 0;
+    this.mutator = MUT;
+
+    // ---- pickup schedule (seed-driven) ----
+    this.pickups = [];            // live orbs in the arena
+    this.pickupLog = [];          // [{by, buff}] for meta / description
+    this.pendingPickups = [];
+    if (PICKUPS_ON && this.n <= 3) {
+      const nP = pickRng() < 0.22 ? 0 : (pickRng() < 0.72 ? 1 : 2);
+      for (let i = 0; i < nP; i++) {
+        const at = 3.2 + i * 5.5 + pickRng() * 3.0;                    // seconds into the fight
+        const ang = pickRng() * Math.PI * 2, rad = this.arenaR0 * (0.12 + pickRng() * 0.42);
+        const id = PICKUP_IDS[Math.floor(pickRng() * PICKUP_IDS.length)];
+        this.pendingPickups.push({ at, x: this.cx + Math.cos(ang) * rad, y: this.cy + Math.sin(ang) * rad, id });
+      }
+    }
+
+    // let a mutator reshape the fighters now that they exist
+    if (MUT && MUT.world) MUT.world(this);
+
+    // ---- arena hazard ----
+    this.hazard = null;
+    if (HAZARDS_ON) {
+      const forced = Q.get("hz");
+      if (forced != null) this.hazard = forced === "0" ? null : forced;
+      else if (hazRng() < 0.58) this.hazard = THEME_HAZARD[this.theme.name] || null;
+    }
+    this._initHazard();
+  }
+
+  _initHazard() {
+    this.haz = {};
+    const R0 = this.arenaR0;
+    if (this.hazard === "pit") {
+      this.haz.pitR = R0 * 0.24;
+    } else if (this.hazard === "pegs") {
+      this.haz.pegs = [];
+      const n = 7;
+      for (let i = 0; i < n; i++) {
+        const ang = (i / n) * Math.PI * 2 + hazRng() * 1.2;
+        const rad = R0 * (0.28 + hazRng() * 0.36);
+        this.haz.pegs.push({ x: this.cx + Math.cos(ang) * rad, y: this.cy + Math.sin(ang) * rad, r: 22 });
+      }
+    } else if (this.hazard === "saw") {
+      this.haz.saw = { a: hazRng() * Math.PI, phase: hazRng() * 6.28, speed: 1.5 + hazRng() * 0.7, span: R0 * 0.86, r: 34, rot: 0 };
+    } else if (this.hazard === "wind") {
+      this.haz.wind = { a: hazRng() * Math.PI * 2, turn: (hazRng() - 0.5) * 0.5, force: 520, streaks: [] };
+      for (let i = 0; i < 26; i++) this.haz.wind.streaks.push({ x: rng() * W, y: rng() * H, len: rnd(18, 44) });
+    } else if (this.hazard === "ice") {
+      DRAG = 0.055; FRICTION_MULT *= 0.4;
+    }
+  }
+
+  living() { return this.fighters.filter(f => f.alive); }
+
+  _stepAmbient(dt) {
+    for (const p of this.ambient) {
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.y < -10) { p.y = H + 10; p.x = rnd(0, W); }
+      if (p.x < -10) p.x = W + 10; else if (p.x > W + 10) p.x = -10;
+    }
+  }
+
+  _logSfx(type, data) {
+    if (this.audioLog.length < 6000)
+      this.audioLog.push(Object.assign({ t: +this.clock.toFixed(3), type }, data));
+  }
+
+  step(dt, input) {
+    this._stepAmbient(dt);
+    if (this.state === "menu") return;
+    this.clock += dt;
+    if (this.state === "intro") {
+      this.t += dt;
+      if (this.t >= INTRO_SECONDS) { this.state = "fight"; this.t = 0; }
+      // let them drift gently during countdown
+      for (const f of this.fighters) {
+        f.x += f.vx * dt * 0.22; f.y += f.vy * dt * 0.22;
+        f.trail.push({ x: f.x, y: f.y }); if (f.trail.length > TRAIL_LEN) f.trail.shift();
+        this._confine(f, dt, true);
+      }
+      return;
+    }
+    if (this.state === "over") {
+      this.t += dt;
+      this.zoom += (1 - this.zoom) * Math.min(1, dt * 2.5);
+      this.shakes *= (1 - 6 * dt);
+      this.flash = Math.max(0, this.flash - dt * 2);
+      for (const p of this.sparks) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= (1 - 2 * dt); p.vy *= (1 - 2 * dt); p.life -= dt; }
+      this.sparks = this.sparks.filter(p => p.life > 0);
+      for (const r of this.rings) { r.rr += r.spd * dt; r.life -= dt; }
+      this.rings = this.rings.filter(r => r.life > 0);
+      for (const s of this.shards) { s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 900 * dt; s.vx *= (1 - 0.6 * dt); s.rot += s.spin * dt; s.life -= dt; }
+      this.shards = this.shards.filter(s => s.life > 0);
+      for (const c of this.confetti) { c.x += c.vx * dt; c.y += c.vy * dt; c.vy += 120 * dt; c.rot += c.spin * dt; }
+      this.confetti = this.confetti.filter(c => c.y < H + 40);
+      return;
+    }
+
+    this.t += dt;
+
+    // shrink arena from min->max seconds (SHRINK_MULT closes it faster)
+    const s0 = BATTLE_MIN_SECONDS * 0.5, s1 = BATTLE_MAX_SECONDS;
+    const k = Math.max(0, Math.min(1, (this.t - s0) / ((s1 - s0) / SHRINK_MULT)));
+    this.arenaR = this.arenaR0 + (this.arenaRmin - this.arenaR0) * k;
+
+    // ---- AI + player control ----
+    for (const f of this.fighters) {
+      if (!f.alive) continue;
+      if (f.idx === this.playerIdx) this._controlPlayer(f, dt, input);
+      else this._controlAI(f, dt);
+      f.lungeCd -= dt;
+    }
+
+    // ---- integrate ----
+    for (const f of this.fighters) {
+      if (!f.alive) continue;
+      f.x += f.vx * dt; f.y += f.vy * dt;
+      f.angle += f.spin * dt;
+      f.spin *= (1 - 0.35 * dt);
+      // mild drag so fights don't runaway-accelerate
+      f.vx *= (1 - DRAG * dt); f.vy *= (1 - DRAG * dt);
+      f.hitFlash = Math.max(0, f.hitFlash - dt * 4);
+      f.scale += (1 - f.scale) * Math.min(1, dt * 12);
+      if (f.dmgPopT > 0) f.dmgPopT -= dt;
+      // buff timer + REGEN mutator + HEAL buff
+      if (f.buff) { f.buff.t -= dt; if (f.buff.t <= 0) f.buff = null; }
+      const regen = REGEN_PER_SEC + (f.buff && f.buff.id === "heal" ? f.buff.rate : 0);
+      if (regen > 0 && f.hp > 0) f.hp = Math.min(f.maxHp, f.hp + regen * dt);
+      // chainsaw grind DoT
+      if (f._dot) {
+        f._dot.t -= dt; f.hp -= f._dot.dps * dt;
+        f.hitFlash = Math.max(f.hitFlash, 0.3);
+        const by = f._dot.by;
+        if (f._dot.t <= 0) f._dot = null;
+        if (f.hp <= 0) { this._kill(f, by); continue; }
+      }
+      f.chipHp += (f.hp - f.chipHp) * Math.min(1, dt * 3.5);   // chip-damage trail
+      f.trail.push({ x: f.x, y: f.y });
+      if (f.trail.length > TRAIL_LEN) f.trail.shift();
+      this._confine(f, dt, false);
+    }
+
+    // ---- collisions (pairwise) ----
+    const L = this.living();
+    for (let a = 0; a < L.length; a++) {
+      for (let b = a + 1; b < L.length; b++) this._collide(L[a], L[b], dt);
+    }
+    // decay pair cooldowns
+    for (const [key, v] of this.pairCd) {
+      const nv = v - dt;
+      if (nv <= 0) this.pairCd.delete(key); else this.pairCd.set(key, nv);
+    }
+
+    // ---- pickups ----
+    this._stepPickups(dt);
+
+    // ---- thrown weapons (pistol / shuriken / boomerang) ----
+    this._stepWeapons(dt);
+
+    // ---- arena hazard ----
+    if (this.hazard) this._stepHazard(dt);
+
+    // ---- storm (outside-arena chip damage) ----
+    for (const f of this.living()) {
+      const d = len(f.x - this.cx, f.y - this.cy);
+      if (d > this.arenaR - f._baseR * 0.4) {
+        f.hp -= 9 * dt;
+        f.hitFlash = Math.max(f.hitFlash, 0.35);
+        if (f.hp <= 0) this._kill(f);           // storm kill — no killer credit
+      }
+    }
+
+    // ---- sparks / fx ----
+    for (const p of this.sparks) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= (1 - 2 * dt); p.vy *= (1 - 2 * dt); p.life -= dt; }
+    this.sparks = this.sparks.filter(p => p.life > 0);
+    for (const r of this.rings) { r.rr += r.spd * dt; r.life -= dt; }
+    this.rings = this.rings.filter(r => r.life > 0);
+    this.shakes *= (1 - 6 * dt);
+    this.flash = Math.max(0, this.flash - dt * 3);
+    if (this.callout) { this.callout.t -= dt; if (this.callout.t <= 0) this.callout = null; }
+
+    // shards (KO debris)
+    for (const s of this.shards) {
+      s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 900 * dt;
+      s.vx *= (1 - 0.6 * dt); s.rot += s.spin * dt; s.life -= dt;
+    }
+    this.shards = this.shards.filter(s => s.life > 0);
+
+    // ---- win / timeout ----  (hold off while the final-KO slow-mo plays;
+    // world.slowmo is counted down in real frame-time by tick())
+    const alive = this.living();
+    if (alive.length <= 1 && this.t > BATTLE_MIN_SECONDS * 0.4 && this.slowmo <= 0) {
+      if (alive.length === 0) { this._finish(this._topHp(), true); this.finishText = "DOUBLE KO!"; }
+      else this._finish(alive[0], true);
+    } else if (this.t >= BATTLE_MAX_SECONDS) {
+      this._finish(this._topHp(), false);
+    }
+  }
+
+  _shatter(f) {
+    const n = 11;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + rnd(-0.4, 0.4), sp = rnd(120, 560);
+      this.shards.push({
+        x: f.x, y: f.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - rnd(40, 200),
+        len: rnd(10, 26), rot: rnd(0, 6.28), spin: rnd(-14, 14),
+        life: rnd(0.7, 1.25), c: i % 4 ? f.tint : "#ffffff",
+      });
+    }
+  }
+
+  _topHp() { return this.fighters.slice().sort((p, q) => q.hp - p.hp)[0]; }
+
+  _finish(f, byKo) {
+    this.state = "over"; this.t = 0; this.winner = f; this.flash = 1; this.shakes = 24;
+    this.callout = null; this.slowmo = 0;
+    // clear any in-flight damage / tag popups so they don't freeze on the winner card
+    for (const g of this.fighters) { g.dmgPopT = 0; g.eDmg = 0; g._tag = null; }
+    this.zoom = 1.18;               // render-side punch-in on the winner, eases back
+    this.projectiles = [];
+    // confetti burst for the winner card
+    const cols = [this.theme.accent, "#ffd27a", "#ffffff", f ? f.tint : "#fff", "#5affa0"];
+    for (let i = 0; i < 46; i++) {
+      this.confetti.push({
+        x: rnd(0, W), y: rnd(-120, this.cy - 200),
+        vx: rnd(-60, 60), vy: rnd(40, 200),
+        w: rnd(6, 14), h: rnd(8, 20), rot: rnd(0, 6.28), spin: rnd(-8, 8),
+        c: cols[Math.floor(rng() * cols.length)],
+      });
+    }
+    const clean = ["FLAWLESS!", "DOMINATION!", "UNTOUCHED!"];
+    const comeback = ["COMEBACK WIN!", "CLUTCH!", "AGAINST ALL ODDS!"];
+    if (byKo && f && f.hp > START_HP * 0.7) this.finishText = pick(clean);
+    else if (byKo && f && f.hp < START_HP * 0.25) this.finishText = pick(comeback);
+    else this.finishText = byKo ? "WINNER!" : "TIME'S UP — TOP HP WINS";
+  }
+
+  _kill(f, killer) {
+    if (!f.alive) return;
+    f.alive = false; f.hp = 0; f.chipHp = 0;
+    if (killer && killer !== f && killer.alive) killer.kills++;
+    this._shatter(f);
+    this.flash = Math.max(this.flash, 0.85); this.shakes = Math.max(this.shakes, 17);
+    this.hitstop = Math.max(this.hitstop, 0.07);
+    // the deciding KO gets a real slow-motion beat before the winner card
+    if (this.living().length <= 1) { this.slowmo = 0.85; this._slowFocus = { x: f.x, y: f.y }; }
+    this.rings.push({ x: f.x, y: f.y, rr: f._baseR, spd: 900, life: 0.5, c: "#fff" });
+    for (let i = 0; i < 30; i++) {
+      const a = rnd(0, Math.PI * 2), sp = rnd(60, 640);
+      this.sparks.push({ x: f.x, y: f.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rnd(0.3, 0.85), c: i % 3 ? f.tint : "#fff" });
+    }
+    // callouts
+    const survivors = this.living().length;
+    if (this.t - this.lastKillT < 0.9 && this.killCount >= 1) this.callout = { txt: "DOUBLE KILL!", t: 1.5 };
+    else if (this.killCount === 0 && this.n >= 3) this.callout = { txt: "FIRST BLOOD", t: 1.4 };
+    else if (survivors === 1 && this.n >= 3) this.callout = { txt: "LAST ONE STANDING", t: 1.6 };
+    this.killCount++; this.lastKillT = this.t;
+    sfx.ko();
+    this._logSfx("ko", {});
+    if (this.callout) this._logSfx("callout", { txt: this.callout.txt });
+  }
+
+  _confine(f, dt, soft) {
+    // circular arena wall bounce
+    const dx = f.x - this.cx, dy = f.y - this.cy;
+    const d = len(dx, dy);
+    const lim = (soft ? this.arenaR0 : this.arenaR) - f._baseR;
+    if (d > lim) {
+      const [nx, ny] = norm(dx, dy);
+      f.x = this.cx + nx * lim; f.y = this.cy + ny * lim;
+      const vn = f.vx * nx + f.vy * ny;
+      if (vn > 0) { const e = Math.min(1.25, MAT[f.material].elasticity + ELASTIC_BONUS); f.vx -= (1 + e) * vn * nx; f.vy -= (1 + e) * vn * ny; f.spin += rnd(-3, 3); }
+    }
+  }
+
+  _controlPlayer(f, dt, input) {
+    // aim toward pointer, thrust while held
+    if (input.aimX != null) {
+      const [ax, ay] = norm(input.aimX - f.x, input.aimY - f.y);
+      f.angle = Math.atan2(ay, ax) + Math.PI / 2;   // tip (local -y) faces pointer
+      if (input.thrust) {
+        const push = 2600;
+        f.vx += ax * push * dt; f.vy += ay * push * dt;
+      }
+    }
+    // keyboard fallback
+    let kx = 0, ky = 0;
+    if (input.keys.has("a") || input.keys.has("arrowleft")) kx -= 1;
+    if (input.keys.has("d") || input.keys.has("arrowright")) kx += 1;
+    if (input.keys.has("w") || input.keys.has("arrowup")) ky -= 1;
+    if (input.keys.has("s") || input.keys.has("arrowdown")) ky += 1;
+    if (kx || ky) { const [nx, ny] = norm(kx, ky); f.vx += nx * 2200 * dt; f.vy += ny * 2200 * dt; f.angle = Math.atan2(ny, nx) + Math.PI / 2; }
+    // clamp speed
+    const smax = 1050; const sp = len(f.vx, f.vy);
+    if (sp > smax) { f.vx *= smax / sp; f.vy *= smax / sp; }
+  }
+
+  _controlAI(f, dt) {
+    // seek nearest living enemy
+    let tgt = null, best = 1e9;
+    for (const o of this.living()) {
+      if (o === f) continue;
+      const d = len(o.x - f.x, o.y - f.y);
+      if (d < best) { best = d; tgt = o; }
+    }
+    if (!tgt) return;
+    const zeal = (f.buff && f.buff.id === "berserk") ? 1.7 : 1;   // BERSERK pickup
+    const [dx, dy] = norm(tgt.x - f.x, tgt.y - f.y);
+    // steer velocity toward target, face tip at it
+    const steer = 900 * zeal;
+    f.vx += dx * steer * dt; f.vy += dy * steer * dt;
+    f.angle = Math.atan2(dy, dx) + Math.PI / 2;
+    // periodic lunge impulse (ported concept)
+    if (f.lungeCd <= 0) {
+      const victim = pick(this.living().filter(o => o !== f)) || tgt;
+      const [lx, ly] = norm(victim.x - f.x, victim.y - f.y);
+      const imp = rnd(360, 620) * zeal;
+      f.vx += lx * imp; f.vy += ly * imp; f.spin += rnd(-5, 5);
+      f.lungeCd = rnd(0.9, 1.9) / zeal;
+    }
+    // pull back toward center if near the closing wall
+    const dc = len(f.x - this.cx, f.y - this.cy);
+    if (dc > this.arenaR * 0.86) {
+      const [cx, cy] = norm(this.cx - f.x, this.cy - f.y);
+      f.vx += cx * 1400 * dt; f.vy += cy * 1400 * dt;
+    }
+    const smax = 1000 * zeal; const sp = len(f.vx, f.vy);
+    if (sp > smax) { f.vx *= smax / sp; f.vy *= smax / sp; }
+  }
+
+  // world-space position of a fighter's active zone entry (or body center if none)
+  _zonePoints(f) {
+    const pts = [];
+    const r = f._baseR;
+    if (!f.zone) { pts.push({ x: f.x, y: f.y, rr: r, active: true, whole: true }); return pts; }
+    const ca = Math.cos(f.angle), sa = Math.sin(f.angle);
+    for (const [ox, oy, rf] of f.zone) {
+      // local (ox,oy) with -y = tip; rotate by angle
+      const lx = ox * r, ly = oy * r;
+      const wx = f.x + (lx * ca - ly * sa);
+      const wy = f.y + (lx * sa + ly * ca);
+      pts.push({ x: wx, y: wy, rr: rf * r * ZONE_SCALE, active: true, whole: false });
+    }
+    return pts;
+  }
+
+  _collide(a, b, dt) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = len(dx, dy) || 0.001;
+    const rr = a._baseR + b._baseR;
+    if (d >= rr) return;
+
+    // --- resolve overlap + elastic impulse (circle bodies) ---
+    const [nx, ny] = [dx / d, dy / d];
+    const overlap = rr - d;
+    const totM = a.mass + b.mass;
+    a.x -= nx * overlap * (b.mass / totM); a.y -= ny * overlap * (b.mass / totM);
+    b.x += nx * overlap * (a.mass / totM); b.y += ny * overlap * (a.mass / totM);
+
+    const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
+    const vn = rvx * nx + rvy * ny;
+    if (vn < 0) {
+      const e = Math.min(1.25, Math.min(MAT[a.material].elasticity, MAT[b.material].elasticity) + ELASTIC_BONUS);
+      let j = -(1 + e) * vn / (1 / a.mass + 1 / b.mass);
+      const ix = j * nx, iy = j * ny;
+      a.vx -= ix / a.mass; a.vy -= iy / a.mass;
+      b.vx += ix / b.mass; b.vy += iy / b.mass;
+      // friction -> spin transfer
+      const fr = (MAT[a.material].friction + MAT[b.material].friction) * 0.5 * FRICTION_MULT;
+      a.spin += (-rvy * nx + rvx * ny) * fr * 0.02;
+      b.spin -= (-rvy * nx + rvx * ny) * fr * 0.02;
+    }
+
+    // --- damage (only once per pair per cooldown) ---
+    // weapon identity: fast daggers shorten it, heavy hammers lengthen it
+    const cdMul = Math.min(TRAIT[a.kind] && TRAIT[a.kind].cd || 1, TRAIT[b.kind] && TRAIT[b.kind].cd || 1);
+    const key = a.idx < b.idx ? a.idx + "," + b.idx : b.idx + "," + a.idx;
+    if (this.pairCd.has(key)) return;
+    this.pairCd.set(key, HIT_COOLDOWN * HIT_COOLDOWN_MULT * cdMul);
+
+    // which shape of each was doing the striking? nearest zone point to
+    // the contact point on the shared normal.
+    const contact = { x: a.x + nx * a._baseR, y: a.y + ny * a._baseR };
+    const strike = (f) => {
+      let bestActive = false, bestWhole = false, bestD = 1e9;
+      for (const p of this._zonePoints(f)) {
+        const dd = len(p.x - contact.x, p.y - contact.y) - p.rr;
+        if (dd < bestD) { bestD = dd; bestActive = p.active && dd < f._baseR * 0.9; bestWhole = !!p.whole; }
+      }
+      // body/guard always available as a fallback striker
+      return { active: bestActive, whole: bestWhole };
+    };
+    const sa = strike(a), sb = strike(b);
+
+    // symmetric exchange scaled by crit / parry
+    let mult = 1;
+    let tag = "";
+    const parryChance = Math.max(PARRY_CHANCE,
+      PARRY_CHANCE + (TRAIT[a.kind] && TRAIT[a.kind].parry || 0) + (TRAIT[b.kind] && TRAIT[b.kind].parry || 0));
+    const critChance = CRIT_CHANCE + (TRAIT[a.kind] && TRAIT[a.kind].crit || 0) + (TRAIT[b.kind] && TRAIT[b.kind].crit || 0);
+    if (sa.active && sb.active) { // clash
+      if (parryRng() < parryChance) {
+        // parry: no damage, hard shove apart
+        const shove = 240 * PARRY_KNOCK_MULT;
+        a.vx -= nx * shove / a.mass; a.vy -= ny * shove / a.mass;
+        b.vx += nx * shove / b.mass; b.vy += ny * shove / b.mass;
+        this._spark(contact.x, contact.y, "#ffffff", 18);
+        this.rings.push({ x: contact.x, y: contact.y, rr: 6, spd: 720, life: 0.32, c: "#ffffff" });
+        this._popBoth(a, b, "PARRY!");
+        this.shakes = Math.max(this.shakes, 8);
+        this.hitstop = Math.max(this.hitstop, 0.04);
+        sfx.parry();
+        this._logSfx("parry", {});
+        return;
+      }
+    }
+    if (critRng() < critChance) { mult *= CRIT_MULT; tag = "CRITICAL!"; }
+
+    // time-of-fight envelope: soft ramp-in so nobody dies during the
+    // opening scramble, gentle ramp-up late so a stalemate resolves.
+    const rampIn = Math.min(1, 0.5 + 0.5 * this.t / DMG_RAMP_IN);
+    const rampLate = 1 + Math.max(0, (this.t - DMG_RAMP_LATE)) * 0.05;
+    const envMult = mult * rampIn * Math.min(1.6, rampLate);
+
+    const dmgTo = (att, vic, attStrike, vicStrike) => {
+      let base = BASE_DMG * envMult;
+      base *= Math.pow(att.power / vic.power, POWER_DMG_EXPONENT);
+      if (attStrike.whole) base *= WHOLE_BODY_DISCOUNT;
+      base *= attStrike.active ? ACTIVE_DAMAGE_MULT : GUARD_DAMAGE_MULT;
+      if (attStrike.active && !vicStrike.active) base *= CLEAN_HIT_BONUS;
+      // impact speed scaling (capped tighter so a fast graze isn't a near-KO)
+      base *= 0.7 + Math.min(0.8, Math.abs(vn) / 900);
+      if (att.buff && att.buff.id === "rage") base *= 2;          // RAGE pickup
+      return base;
+    };
+    let dA = dmgTo(a, b, sa, sb);   // damage a deals to b
+    let dB = dmgTo(b, a, sb, sa);   // damage b deals to a
+    // SHIELD pickup — eat the hit, spend a charge
+    if (dA > 0 && b.shield > 0) { b.shield--; dA = 0; b._tag = { txt: "BLOCKED", t: 0.7 }; this._spark(contact.x, contact.y, "#5aa0ff", 16); }
+    if (dB > 0 && a.shield > 0) { a.shield--; dB = 0; a._tag = { txt: "BLOCKED", t: 0.7 }; this._spark(contact.x, contact.y, "#5aa0ff", 16); }
+    b.hp -= dA; a.hp -= dB;
+    b.eDmg = Math.round(dA); a.eDmg = Math.round(dB);
+    b.dmgPopT = a.dmgPopT = 0.7;
+    const clean = sa.active || sb.active;
+    a.hitFlash = b.hitFlash = 1; a.scale = b.scale = clean ? 1.18 : 1.1;
+    this._spark(contact.x, contact.y, clean ? "#ffd27a" : "#9fb4d6", clean ? 14 : 7);
+    this.rings.push({ x: contact.x, y: contact.y, rr: 6, spd: clean ? 640 : 380, life: clean ? 0.34 : 0.22, c: clean ? "#ffe0a0" : "#9fb4d6" });
+    this.shakes = Math.max(this.shakes, clean ? 9 : 4);
+    this.hits++;
+    if (tag) {                                   // crit
+      this._popBoth(a, b, tag); this.flash = Math.max(this.flash, 0.45);
+      this.hitstop = Math.max(this.hitstop, 0.045);
+      this.shakes = Math.max(this.shakes, 13);
+    }
+    sfx.hit(a.material, b.material, clean);
+    this._logSfx("hit", { m1: a.material, m2: b.material, active: clean, crit: !!tag });
+
+    // weapon identity — knockback (hammer family), reel-in (whip family),
+    // grind DoT (chainsaw). Applied from the striker onto the victim.
+    const idTrait = (att, vic, atkStrike) => {
+      const T = TRAIT[att.kind]; if (!T || !atkStrike.active) return;
+      if (T.knock) { vic.vx += nx * (att === a ? 1 : -1) * 260 * T.knock; vic.vy += ny * (att === a ? 1 : -1) * 260 * T.knock; vic.spin += rnd(-6, 6); }
+      if (T.pull)  { const [px, py] = norm(att.x - vic.x, att.y - vic.y); vic.vx += px * T.pull; vic.vy += py * T.pull; }
+      if (T.dot)   { vic._dot = { by: att, dps: T.dot, t: 0.35 }; }
+    };
+    idTrait(a, b, sa); idTrait(b, a, sb);
+
+    // BOMB pickup — the holder's first real strike detonates
+    if (clean && a.buff && a.buff.id === "bomb") { a.buff = null; this._explode(contact.x, contact.y, a); }
+    else if (clean && b.buff && b.buff.id === "bomb") { b.buff = null; this._explode(contact.x, contact.y, b); }
+
+    if (b.hp <= 0) this._kill(b, a);
+    if (a.hp <= 0) this._kill(a, b);
+  }
+
+  _spark(x, y, c, n) {
+    for (let i = 0; i < n; i++) {
+      const ang = rnd(0, Math.PI * 2), sp = rnd(40, 360);
+      this.sparks.push({ x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: rnd(0.2, 0.5), c });
+    }
+  }
+  _popBoth(a, b, txt) { a._tag = b._tag = { txt, t: 0.8 }; }
+
+  // ---- pickups ----
+  _stepPickups(dt) {
+    // release pending orbs once their fight-time arrives
+    for (let i = this.pendingPickups.length - 1; i >= 0; i--) {
+      if (this.t >= this.pendingPickups[i].at) {
+        const q = this.pendingPickups.splice(i, 1)[0];
+        // armT: a telegraph window — visible + counting down, not yet grabbable
+        this.pickups.push({ x: q.x, y: q.y, id: q.id, r: 30, born: 0, armT: 1.2, bob: rng() * 6.28 });
+        this._logSfx("spawn", {});
+      }
+    }
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      const p = this.pickups[i];
+      p.born += dt;
+      if (p.armT > 0) { p.armT -= dt; if (p.armT <= 0) { this._spark(p.x, p.y, PICKUP[p.id].color, 14); this._logSfx("spawn", {}); } continue; }
+      // pull a stray orb back inside the closing wall so it stays reachable
+      const dc = len(p.x - this.cx, p.y - this.cy);
+      if (dc > this.arenaR - 50) {
+        const [nx, ny] = norm(this.cx - p.x, this.cy - p.y);
+        p.x += nx * (dc - (this.arenaR - 50)); p.y += ny * (dc - (this.arenaR - 50));
+      }
+      // first living ball to touch it grabs it
+      for (const f of this.living()) {
+        if (len(f.x - p.x, f.y - p.y) < f._baseR + p.r * 0.8) {
+          this._grantPickup(f, p.id);
+          this.pickups.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+
+  _grantPickup(f, id) {
+    const T = PICKUP[id];
+    this.pickupLog.push({ by: f.name, buff: T.name });
+    this.callout = { txt: f.name.toUpperCase() + " GRABBED " + T.name + "!", t: 1.6 };
+    this._spark(f.x, f.y, T.color, 24);
+    this.rings.push({ x: f.x, y: f.y, rr: f._baseR, spd: 720, life: 0.4, c: T.color });
+    this.flash = Math.max(this.flash, 0.35);
+    sfx.pickup(); this._logSfx("pickup", { id, by: f.name });
+    if (id === "heal") { f.hp = Math.min(f.maxHp, f.hp + 35); f.buff = { id, name: T.name, t: 2.5, rate: 6 }; }
+    else if (id === "shield")  { f.shield = 3; f.buff = { id, name: T.name, t: 10 }; }
+    else if (id === "rage")    { f.buff = { id, name: T.name, t: 4.5 }; }
+    else if (id === "berserk") { f.buff = { id, name: T.name, t: 4.5 }; }
+    else if (id === "bomb")    { f.buff = { id, name: T.name, t: 10 }; }
+  }
+
+  _stepWeapons(dt) {
+    const L = this.living();
+    // fire
+    for (const f of L) {
+      const T = TRAIT[f.kind]; if (!T || !T.proj) continue;
+      f._projCd -= dt;
+      if (f._projCd <= 0) {
+        let tgt = null, best = 1e9;
+        for (const o of L) { if (o === f) continue; const d = len(o.x - f.x, o.y - f.y); if (d < best) { best = d; tgt = o; } }
+        if (tgt) {
+          const [dx, dy] = norm(tgt.x - f.x, tgt.y - f.y);
+          this.projectiles.push({
+            x: f.x + dx * f._baseR, y: f.y + dy * f._baseR,
+            vx: dx * T.proj.speed, vy: dy * T.proj.speed,
+            dmg: T.proj.dmg, col: T.proj.col, spin: T.proj.spin || 0, rot: 0,
+            owner: f, returns: !!T.proj.returns, life: 0, back: false, kind: f.kind,
+          });
+          this._spark(f.x + dx * f._baseR, f.y + dy * f._baseR, T.proj.col, 6);
+          sfx.pew(); this._logSfx("pew", {});
+          f._projCd = T.proj.cd;
+        } else { f._projCd = 0.4; }
+      }
+    }
+    // move + hit + expire
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectiles[i];
+      p.life += dt; p.rot += (p.spin + 12) * dt;
+      if (p.returns && !p.back && (p.life > 0.55 || len(p.x - this.cx, p.y - this.cy) > this.arenaR * 0.9)) p.back = true;
+      if (p.back && p.owner.alive) {
+        const [hx, hy] = norm(p.owner.x - p.x, p.owner.y - p.y);
+        const sp = len(p.vx, p.vy) || 700;
+        p.vx += hx * sp * 4 * dt; p.vy += hy * sp * 4 * dt;
+        const s2 = len(p.vx, p.vy); if (s2 > sp * 1.3) { p.vx *= sp * 1.3 / s2; p.vy *= sp * 1.3 / s2; }
+        if (len(p.x - p.owner.x, p.y - p.owner.y) < p.owner._baseR + 14) { this.projectiles.splice(i, 1); continue; }
+      }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      let hit = false;
+      for (const g of L) {
+        if (g === p.owner && !p.back) continue;
+        if (g === p.owner) continue;
+        if (len(g.x - p.x, g.y - p.y) < g._baseR + 12) {
+          const scaled = p.dmg * Math.min(1.15, 0.5 + 0.4 * this.t / DMG_RAMP_IN);
+          if (g.shield > 0) { g.shield--; g._tag = { txt: "BLOCKED", t: 0.7 }; }
+          else { g.hp -= scaled; g.eDmg = Math.round(scaled); g.dmgPopT = 0.7; g.hitFlash = 1; g.scale = 1.14; }
+          const [kx, ky] = norm(p.vx, p.vy);
+          g.vx += kx * 220; g.vy += ky * 220;
+          this._spark(p.x, p.y, p.col, 12);
+          this.rings.push({ x: p.x, y: p.y, rr: 5, spd: 420, life: 0.24, c: p.col });
+          this.shakes = Math.max(this.shakes, 6);
+          sfx.hit("metal", "metal", true); this._logSfx("hit", { m1: "metal", m2: "metal", active: true });
+          if (g.hp <= 0) this._kill(g, p.owner);
+          hit = true; break;
+        }
+      }
+      const off = len(p.x - this.cx, p.y - this.cy) > this.arenaR0 + 120;
+      if (hit || p.life > 3.2 || (off && !p.returns)) this.projectiles.splice(i, 1);
+    }
+  }
+
+  _sawPos() {
+    const s = this.haz.saw;
+    const off = Math.sin(s.phase) * s.span;
+    return { x: this.cx + Math.cos(s.a) * off, y: this.cy + Math.sin(s.a) * off };
+  }
+
+  _stepHazard(dt) {
+    const L = this.living();
+    if (this.hazard === "pit") {
+      const pr = this.haz.pitR;
+      for (const f of L) {
+        if (len(f.x - this.cx, f.y - this.cy) < pr + f._baseR * 0.3) {
+          f.hp -= 11 * dt; f.hitFlash = Math.max(f.hitFlash, 0.4);
+          const [ox, oy] = norm((f.x - this.cx) || 0.01, (f.y - this.cy) || 0.01);
+          f.vx += ox * 260 * dt; f.vy += oy * 260 * dt;
+          if (this.t % 0.2 < dt) this._spark(f.x, f.y, "#ff7a2f", 4);
+          if (f.hp <= 0) this._kill(f);
+        }
+      }
+    } else if (this.hazard === "pegs") {
+      for (const f of L) {
+        for (const p of this.haz.pegs) {
+          const dx = f.x - p.x, dy = f.y - p.y, d = len(dx, dy) || 0.01, rr = f._baseR + p.r;
+          if (d < rr) {
+            const [nx, ny] = [dx / d, dy / d];
+            f.x = p.x + nx * rr; f.y = p.y + ny * rr;
+            const vn = f.vx * nx + f.vy * ny;
+            if (vn < 0) { f.vx -= 1.85 * vn * nx; f.vy -= 1.85 * vn * ny; f.spin += rnd(-4, 4); }
+            this._spark(f.x, f.y, this.theme.accent, 5);
+          }
+        }
+      }
+    } else if (this.hazard === "saw") {
+      const s = this.haz.saw;
+      s.phase += s.speed * dt; s.rot += 18 * dt;
+      const sp = this._sawPos();
+      for (const f of L) {
+        const d = len(f.x - sp.x, f.y - sp.y);
+        if (d < f._baseR + s.r) {
+          f.hp -= 20 * dt; f.hitFlash = 1; f.scale = 1.15;
+          const [nx, ny] = norm((f.x - sp.x) || 0.01, (f.y - sp.y) || 0.01);
+          f.vx += nx * 1600 * dt; f.vy += ny * 1600 * dt; f.spin += rnd(-6, 6);
+          this._spark(f.x, f.y, "#ffd27a", 6);
+          this.shakes = Math.max(this.shakes, 6);
+          if (f.hp <= 0) this._kill(f);
+        }
+      }
+    } else if (this.hazard === "wind") {
+      const w = this.haz.wind;
+      w.a += w.turn * dt;
+      const fx = Math.cos(w.a), fy = Math.sin(w.a);
+      for (const f of L) { f.vx += fx * w.force * dt; f.vy += fy * w.force * dt; }
+      for (const st of w.streaks) {
+        st.x += fx * 260 * dt; st.y += fy * 260 * dt;
+        if (st.x < -50) st.x = W + 50; else if (st.x > W + 50) st.x = -50;
+        if (st.y < -50) st.y = H + 50; else if (st.y > H + 50) st.y = -50;
+      }
+    }
+  }
+
+  _explode(x, y, src) {
+    this.flash = Math.max(this.flash, 0.95); this.shakes = Math.max(this.shakes, 26);
+    this.hitstop = Math.max(this.hitstop, 0.06);
+    this.rings.push({ x, y, rr: 24, spd: 1500, life: 0.5, c: "#ffb057" });
+    this.rings.push({ x, y, rr: 12, spd: 900, life: 0.4, c: "#fff" });
+    this._spark(x, y, "#ff7a2f", 44);
+    this.callout = { txt: "💥 BOOM", t: 1.2 };
+    sfx.ko(); this._logSfx("explode", {});
+    const R = 360;
+    for (const g of this.living()) {
+      const d = len(g.x - x, g.y - y);
+      if (d < R) {
+        const f = 1 - d / R;
+        const dmg = 30 * f;
+        g.hp -= dmg; g.eDmg = Math.round(dmg); g.dmgPopT = 0.7; g.hitFlash = 1; g.scale = 1.2;
+        const [nx, ny] = norm((g.x - x) || 0.01, (g.y - y) || 0.01);
+        g.vx += nx * 1000 * f; g.vy += ny * 1000 * f; g.spin += rnd(-8, 8);
+        if (g.hp <= 0) this._kill(g, src);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+// Synthesized SFX (Web Audio, no assets) — ported spirit of battle_sim
+// ---------------------------------------------------------------------
+const sfx = (() => {
+  let ac = null;
+  function ctx() { if (!ac && !MUTED) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } return ac; }
+  function blip(freq, dur, type, gain, sweep) {
+    const a = ctx(); if (!a) return;
+    const o = a.createOscillator(), g = a.createGain();
+    o.type = type || "square"; o.frequency.setValueAtTime(freq, a.currentTime);
+    if (sweep) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq * sweep), a.currentTime + dur);
+    g.gain.setValueAtTime(gain || 0.14, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+    o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + dur + 0.02);
+  }
+  return {
+    hit(m1, m2, active) {
+      if (m1 === "blunt" || m2 === "blunt") blip(150, 0.12, "sine", 0.16, 0.4);
+      else if (m1 === "wood" || m2 === "wood") blip(320, 0.07, "triangle", 0.12, 0.6);
+      else if (m1 === "whip" || m2 === "whip") blip(900, 0.05, "sawtooth", 0.10, 0.3);
+      else if (m1 === "mechanical" || m2 === "mechanical") blip(90, 0.14, "sawtooth", 0.12);
+      else blip(active ? 1400 : 800, 0.06, "square", active ? 0.16 : 0.10, 0.35);
+    },
+    parry() { blip(1800, 0.05, "square", 0.16, 0.5); setTimeout(() => blip(2400, 0.05, "square", 0.12, 0.6), 30); },
+    ko() { blip(70, 0.35, "sawtooth", 0.22, 0.4); },
+    pew() { blip(1200, 0.06, "sawtooth", 0.10, 0.35); },
+    pickup() { blip(520, 0.10, "triangle", 0.14, 2.2); setTimeout(() => blip(880, 0.12, "triangle", 0.12, 1.8), 60); },
+    count(n) { blip(n === 0 ? 700 : 420, n === 0 ? 0.25 : 0.1, "square", 0.16); },
+    win() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => blip(f, 0.18, "square", 0.15), i * 110)); },
+  };
+})();
+
+// ---------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+
+function fitCanvas() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width = (W * s) + "px";
+  cv.style.height = (H * s) + "px";
+}
+addEventListener("resize", fitCanvas); fitCanvas();
+
+function drawTrail(f) {
+  const r = f._baseR;
+  for (let i = 0; i < f.trail.length; i++) {
+    const p = f.trail[i], k = (i + 1) / f.trail.length;
+    ctx.globalAlpha = k * 0.28;
+    ctx.fillStyle = f.tint;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r * (0.35 + 0.5 * k), 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawWeaponBall(f, world) {
+  const r = f._baseR * f.scale;
+  ctx.save();
+  ctx.translate(f.x, f.y);
+  // body
+  const g = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.2, 0, 0, r);
+  g.addColorStop(0, "#ffffff"); g.addColorStop(0.22, mixHex(f.tint, "#ffffff", 0.25)); g.addColorStop(1, shade(f.tint, -0.5));
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fillStyle = g; ctx.fill();
+  if (f.hitFlash > 0) { ctx.fillStyle = `rgba(255,255,255,${f.hitFlash * 0.6})`; ctx.fill(); }
+  ctx.lineWidth = 3; ctx.strokeStyle = f.hitFlash > 0 ? `rgba(255,255,255,${f.hitFlash})` : "rgba(0,0,0,.35)"; ctx.stroke();
+
+  // weapon shape toward tip (local -y)
+  ctx.rotate(f.angle);
+  ctx.strokeStyle = shade(f.tint, 0.35); ctx.fillStyle = mixHex(f.tint, "#ffffff", 0.15); ctx.lineCap = "round";
+  const reach = r * 1.15;
+  drawBlade(f.kind, r, reach);
+  ctx.restore();
+
+  // active pickup buff — a coloured pulsing ring around the holder
+  if (f.buff) {
+    const T = PICKUP[f.buff.id];
+    const pulse = 0.6 + 0.4 * Math.sin(world.t * 10);
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.strokeStyle = T.color; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(f.x, f.y, r + 12, 0, Math.PI * 2); ctx.stroke();
+    if (f.buff.id === "shield" && f.shield > 0) {
+      ctx.globalAlpha = 0.5; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(f.x, f.y, r + 20, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // player ring
+  if (f.idx === world.playerIdx) {
+    ctx.beginPath(); ctx.arc(f.x, f.y, r + 8, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(90,200,120,.9)"; ctx.lineWidth = 4; ctx.stroke();
+  }
+  // damage popup
+  if (f.dmgPopT > 0 && f.eDmg > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, f.dmgPopT * 2);
+    ctx.fillStyle = "#ffd27a"; ctx.font = "bold 40px Segoe UI, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("-" + f.eDmg, f.x, f.y - r - 18 - (0.7 - f.dmgPopT) * 60);
+    ctx.restore();
+  }
+  if (f._tag && f._tag.t > 0) {
+    ctx.save(); ctx.globalAlpha = Math.min(1, f._tag.t * 1.5);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 34px Segoe UI, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(f._tag.txt, f.x, f.y - r - 60);
+    ctx.restore();
+    f._tag.t -= 1 / FPS;
+  }
+}
+
+function drawBlade(kind, r, reach) {
+  ctx.lineWidth = Math.max(6, r * 0.16);
+  switch (kind) {
+    case "spear": case "staff": case "trident": case "rapier": case "halberd":
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -reach * 1.35); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -reach * 1.35); ctx.lineTo(-r * 0.22, -reach * 1.05); ctx.lineTo(r * 0.22, -reach * 1.05); ctx.closePath(); ctx.fill();
+      break;
+    case "hammer": case "warhammer": case "mace":
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -reach); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, -reach, r * 0.5, 0, Math.PI * 2); ctx.fill();
+      break;
+    case "axe": case "war_axe": case "tomahawk": case "cleaver": case "scythe":
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -reach); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -reach); ctx.quadraticCurveTo(r * 0.9, -reach * 0.7, r * 0.5, -reach * 0.35);
+      ctx.quadraticCurveTo(r * 0.2, -reach * 0.6, 0, -reach * 0.9); ctx.closePath(); ctx.fill();
+      break;
+    case "chainsaw":
+      ctx.beginPath(); ctx.rect(-r * 0.28, -reach, r * 0.56, reach); ctx.fill();
+      break;
+    case "shuriken":
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2; ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * reach, Math.sin(a) * reach); }
+      ctx.lineWidth = r * 0.3; ctx.stroke();
+      break;
+    case "boomerang":
+      ctx.beginPath(); ctx.moveTo(-reach * 0.7, 0); ctx.quadraticCurveTo(0, -reach * 0.8, reach * 0.7, 0);
+      ctx.lineWidth = r * 0.28; ctx.stroke();
+      break;
+    case "whip": case "flail": case "nunchaku":
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(r * 0.5, -reach * 0.6, 0, -reach * 1.2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, -reach * 1.2, r * 0.22, 0, Math.PI * 2); ctx.fill();
+      break;
+    case "claws":
+      for (let i = -1; i <= 1; i++) {
+        ctx.beginPath(); ctx.moveTo(i * r * 0.32, -r * 0.2);
+        ctx.quadraticCurveTo(i * r * 0.5, -reach * 0.9, i * r * 0.2, -reach * 1.05); ctx.stroke();
+      }
+      break;
+    case "pistol":
+      ctx.beginPath(); ctx.rect(-r * 0.16, -reach * 0.95, r * 0.32, reach * 0.7); ctx.fill();
+      ctx.beginPath(); ctx.rect(-r * 0.34, -reach * 0.28, r * 0.34, reach * 0.5); ctx.fill();
+      break;
+    case "dual_daggers":
+      for (const s of [-1, 1]) {
+        ctx.beginPath(); ctx.moveTo(s * r * 0.42, 0); ctx.lineTo(s * r * 0.42, -reach * 1.05); ctx.stroke();
+      }
+      break;
+    default: // sword-like
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -reach * 1.25); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-r * 0.3, -r * 0.25); ctx.lineTo(r * 0.3, -r * 0.25); ctx.lineWidth = r * 0.14; ctx.stroke();
+  }
+}
+
+function shade(hex, amt) {
+  const c = hex.replace("#", "");
+  let r = parseInt(c.substr(0, 2), 16), g = parseInt(c.substr(2, 2), 16), b = parseInt(c.substr(4, 2), 16);
+  if (amt < 0) { r *= (1 + amt); g *= (1 + amt); b *= (1 + amt); }
+  else { r += (255 - r) * amt; g += (255 - g) * amt; b += (255 - b) * amt; }
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+
+// set ctx.font to the largest "<weight> <px>px" that fits `text` in `maxW`
+function fitFont(text, weight, px, maxW) {
+  let size = px;
+  do {
+    ctx.font = weight + " " + size + "px Segoe UI, sans-serif";
+    if (ctx.measureText(text).width <= maxW) break;
+    size -= 4;
+  } while (size > 16);
+  return size;
+}
+
+function drawHazard(world) {
+  const th = world.theme, H4 = world.haz;
+  if (world.hazard === "pit") {
+    const pr = H4.pitR * (1 + 0.03 * Math.sin(world.t * 4));
+    const g = ctx.createRadialGradient(world.cx, world.cy, pr * 0.2, world.cx, world.cy, pr);
+    g.addColorStop(0, "rgba(255,150,60,0.85)"); g.addColorStop(0.6, "rgba(200,40,20,0.6)"); g.addColorStop(1, "rgba(120,10,10,0.05)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(world.cx, world.cy, pr, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(255,120,40,0.7)"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(world.cx, world.cy, pr, 0, Math.PI * 2); ctx.stroke();
+  } else if (world.hazard === "pegs") {
+    for (const p of H4.pegs) {
+      const gg = ctx.createRadialGradient(p.x - 6, p.y - 6, 2, p.x, p.y, p.r);
+      gg.addColorStop(0, "#ffffff"); gg.addColorStop(0.4, th.accent); gg.addColorStop(1, shade(th.accent, -0.5));
+      ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 2; ctx.stroke();
+    }
+  } else if (world.hazard === "saw") {
+    const s = H4.saw, sp = world._sawPos();
+    ctx.save(); ctx.translate(sp.x, sp.y); ctx.rotate(s.rot);
+    ctx.fillStyle = "#c9ccd4";
+    for (let i = 0; i < 10; i++) {
+      ctx.rotate(Math.PI / 5);
+      ctx.beginPath(); ctx.moveTo(s.r - 4, -6); ctx.lineTo(s.r + 10, 0); ctx.lineTo(s.r - 4, 6); ctx.closePath(); ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(0, 0, s.r, 0, Math.PI * 2);
+    ctx.fillStyle = "#8b9099"; ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, s.r * 0.35, 0, Math.PI * 2);
+    ctx.fillStyle = "#3a3d44"; ctx.fill();
+    ctx.restore();
+    // track line
+    ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(world.cx - Math.cos(s.a) * s.span, world.cy - Math.sin(s.a) * s.span);
+    ctx.lineTo(world.cx + Math.cos(s.a) * s.span, world.cy + Math.sin(s.a) * s.span);
+    ctx.stroke();
+  } else if (world.hazard === "wind") {
+    const w = H4.wind;
+    ctx.strokeStyle = "rgba(200,222,255,.26)"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
+    for (const st of w.streaks) {
+      ctx.beginPath(); ctx.moveTo(st.x, st.y);
+      ctx.lineTo(st.x - Math.cos(w.a) * st.len * 1.6, st.y - Math.sin(w.a) * st.len * 1.6); ctx.stroke();
+    }
+  } else if (world.hazard === "ice") {
+    ctx.fillStyle = "rgba(150,220,255,0.05)";
+    ctx.beginPath(); ctx.arc(world.cx, world.cy, world.arenaR, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+/* =====================================================================
+   Playable-mode menu — Apple-flavoured: near-black stage, one accent,
+   tight-tracked wordmark, rounded pills, generous air. Canvas-drawn +
+   pointer hit-tested (works on touch). MENU.buttons is rebuilt here
+   every frame; menuHit(x,y) consumes it.
+   ===================================================================== */
+const MENU_ACCENT = "#0a84ff";
+function mRound(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function mPill(id, x, y, w, h, label, on, opts) {
+  opts = opts || {};
+  MENU.buttons.push({ id, x, y, w, h });
+  const rad = opts.rad != null ? opts.rad : h / 2;
+  ctx.save();
+  if (on) {
+    ctx.fillStyle = opts.solid || MENU_ACCENT;
+    mRound(x, y, w, h, rad); ctx.fill();
+    ctx.fillStyle = "#fff";
+  } else {
+    ctx.fillStyle = "rgba(255,255,255,.05)";
+    mRound(x, y, w, h, rad); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.14)"; ctx.lineWidth = 1.5;
+    mRound(x + 0.75, y + 0.75, w - 1.5, h - 1.5, rad); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,.82)";
+  }
+  ctx.font = (opts.font || "600 " + Math.round(h * 0.42) + "px") + ' "SF Pro Display", -apple-system, "Segoe UI", sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+  ctx.restore();
+  ctx.textBaseline = "alphabetic";
+}
+function drawMenu() {
+  MENU.buttons.length = 0;
+  const F = '"SF Pro Display", -apple-system, "Segoe UI", system-ui, sans-serif';
+
+  // stage
+  const bg = ctx.createRadialGradient(W / 2, H * 0.32, 0, W / 2, H * 0.42, Math.max(W, H) * 0.75);
+  bg.addColorStop(0, "#17181d"); bg.addColorStop(0.55, "#101014"); bg.addColorStop(1, "#08080a");
+  ctx.fillStyle = "#08080a"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  const gl = ctx.createRadialGradient(W / 2, -H * 0.12, 0, W / 2, -H * 0.12, W * 0.6);
+  gl.addColorStop(0, "rgba(10,132,255,0.14)"); gl.addColorStop(1, "rgba(10,132,255,0)");
+  ctx.fillStyle = gl; ctx.fillRect(0, 0, W, H);
+
+  if (MENU.screen === "weapons") return drawWeaponPicker(F);
+
+  // ---- wordmark ----
+  ctx.textAlign = "center"; ctx.fillStyle = "#f5f5f7";
+  ctx.font = `600 96px ${F}`;
+  ctx.save(); ctx.translate(0, 0);
+  // tight tracking
+  const word = "Weapon Ball Arena";
+  let tw = 0; for (const ch of word) tw += ctx.measureText(ch).width - 2;
+  let cur = W / 2 - tw / 2;
+  for (const ch of word) { ctx.textAlign = "left"; ctx.fillText(ch, cur, 300); cur += ctx.measureText(ch).width - 2; }
+  ctx.restore();
+  ctx.textAlign = "center"; ctx.fillStyle = "#86868b"; ctx.font = `400 30px ${F}`;
+  ctx.fillText("Physics duels. A new fight every day.", W / 2, 352);
+
+  const L = 200;                                    // left rail x
+
+  // ---- MODE ----
+  ctx.fillStyle = "#86868b"; ctx.font = `600 24px ${F}`; ctx.textAlign = "left";
+  ctx.fillText("MODE", L, 520);
+  mPill("mode_play",  L,       540, 330, 100, "Play",  MENU.mode === "play");
+  mPill("mode_watch", L + 350, 540, 330, 100, "Watch", MENU.mode === "watch");
+  ctx.fillStyle = "#6e6e73"; ctx.font = `400 24px ${F}`; ctx.textAlign = "left";
+  ctx.fillText(MENU.mode === "play" ? "You steer one ball — pointer aims, hold to thrust."
+                                    : "Sit back and watch the AI fight it out.", L, 690);
+
+  // ---- FIGHTERS ----
+  ctx.fillStyle = "#86868b"; ctx.font = `600 24px ${F}`;
+  ctx.fillText("FIGHTERS", L, 770);
+  [2, 3, 4].forEach((k, i) => mPill("n_" + k, L + i * 150, 790, 130, 92, "" + k, MENU.n === k));
+
+  // ---- WEAPONS (play mode) ----
+  if (MENU.mode === "play") {
+    ctx.fillStyle = "#86868b"; ctx.font = `600 24px ${F}`;
+    ctx.fillText("YOUR WEAPON", L, 950);
+    mPill("pick_a", L, 970, 400, 96, MENU.pickA ? prettyKind(MENU.pickA) : "Random", !!MENU.pickA, { rad: 20, font: "600 34px" });
+    ctx.fillStyle = "#86868b"; ctx.font = `600 24px ${F}`;
+    ctx.fillText("OPPONENT", L + 440, 950);
+    mPill("pick_b", L + 440, 970, 400, 96, MENU.pickB ? prettyKind(MENU.pickB) : "Random", !!MENU.pickB, { rad: 20, font: "600 34px" });
+  }
+
+  // ---- START ----
+  mPill("start", W / 2 - 320, 1240, 640, 140, MENU.mode === "play" ? "Fight" : "Watch fight", true,
+        { rad: 44, solid: MENU_ACCENT, font: "700 54px" });
+
+  ctx.fillStyle = "#6e6e73"; ctx.font = `400 24px ${F}`; ctx.textAlign = "center";
+  ctx.fillText("Space or tap the button to start  ·  R restart  ·  M mute", W / 2, 1470);
+}
+function drawWeaponPicker(F) {
+  ctx.textAlign = "center"; ctx.fillStyle = "#f5f5f7"; ctx.font = `600 56px ${F}`;
+  ctx.fillText(MENU.pickFor === "a" ? "Your weapon" : "Opponent", W / 2, 170);
+
+  const cols = 3, cw = 300, ch = 108, gapx = 24, gapy = 20;
+  const gridW = cols * cw + (cols - 1) * gapx;
+  const x0 = (W - gridW) / 2, y0 = 240;
+  const cells = [{ kind: null, name: "Random" }].concat(ROSTER.map(w => ({ kind: w.kind, name: w.name, color: w.color })));
+  const sel = MENU.pickFor === "a" ? MENU.pickA : MENU.pickB;
+  cells.forEach((c, i) => {
+    const cx = x0 + (i % cols) * (cw + gapx);
+    const cy = y0 + Math.floor(i / cols) * (ch + gapy);
+    const on = (c.kind || null) === (sel || null);
+    MENU.buttons.push({ id: "w_" + (c.kind || "random"), x: cx, y: cy, w: cw, h: ch, kind: c.kind || null });
+    ctx.save();
+    ctx.fillStyle = on ? MENU_ACCENT : "rgba(255,255,255,.05)";
+    mRound(cx, cy, cw, ch, 20); ctx.fill();
+    if (!on) { ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 1.5; mRound(cx + 1, cy + 1, cw - 2, ch - 2, 20); ctx.stroke(); }
+    if (c.color) {
+      ctx.fillStyle = c.color;
+      ctx.beginPath(); ctx.arc(cx + 44, cy + ch / 2, 16, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = on ? "#fff" : "rgba(255,255,255,.85)";
+    ctx.font = `600 30px ${F}`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillText(c.name, cx + (c.color ? 76 : 28), cy + ch / 2 + 1);
+    ctx.restore();
+    ctx.textBaseline = "alphabetic";
+  });
+  mPill("wp_back", W / 2 - 200, H - 200, 400, 96, "Done", true, { rad: 30, font: "700 40px" });
+}
+function prettyKind(k) {
+  const w = ROSTER.find(x => x.kind === k);
+  return w ? w.name : k;
+}
+function menuHit(x, y) {
+  for (const b of MENU.buttons) {
+    if (x < b.x || x > b.x + b.w || y < b.y || y > b.y + b.h) continue;
+    const id = b.id;
+    if (id === "mode_play") MENU.mode = "play";
+    else if (id === "mode_watch") MENU.mode = "watch";
+    else if (id.startsWith("n_")) MENU.n = parseInt(id.slice(2), 10);
+    else if (id === "pick_a") { MENU.screen = "weapons"; MENU.pickFor = "a"; }
+    else if (id === "pick_b") { MENU.screen = "weapons"; MENU.pickFor = "b"; }
+    else if (id === "wp_back") MENU.screen = "home";
+    else if (id.startsWith("w_")) {
+      if (MENU.pickFor === "a") MENU.pickA = b.kind; else MENU.pickB = b.kind;
+      MENU.screen = "home";
+    } else if (id === "start") startFromMenu();
+    return true;
+  }
+  return false;
+}
+function startFromMenu() {
+  world = new World();
+  world.state = "intro"; world.t = 0; prevState = "intro";
+}
+
+function render(world) {
+  const th = world.theme;
+
+  // background (fills the whole frame, drawn before any camera transform)
+  const bg = ctx.createRadialGradient(world.cx, world.cy, 60, world.cx, world.cy, Math.max(W, H) * 0.85);
+  bg.addColorStop(0, shade(th.bg, 0.14)); bg.addColorStop(1, th.bg);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  // camera: winner punch-in on the finish, plus impact shake
+  if (world.zoom > 1.001 && world.winner) {
+    const wx = world.winner.x, wy = world.winner.y;
+    ctx.translate(wx, wy); ctx.scale(world.zoom, world.zoom); ctx.translate(-wx, -wy);
+  } else if (world.slowmo > 0 && world._slowFocus) {
+    // gentle push-in on the killing blow during the slow-mo beat
+    const k = 1 + 0.16 * Math.min(1, (0.85 - world.slowmo) * 3);
+    const fx = world._slowFocus.x, fy = world._slowFocus.y;
+    ctx.translate(fx, fy); ctx.scale(k, k); ctx.translate(-fx, -fy);
+  }
+  if (world.shakes > 0.4) ctx.translate(rnd(-1, 1) * world.shakes, rnd(-1, 1) * world.shakes);
+
+  // ambient drifting particles
+  for (const p of world.ambient) {
+    ctx.globalAlpha = p.a; ctx.fillStyle = th.particle;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // grid
+  ctx.strokeStyle = th.grid; ctx.lineWidth = 2; ctx.globalAlpha = 0.5;
+  for (let x = 0; x <= W; x += 90) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += 90) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+
+  // storm band (outside the closing arena) + arena ring
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(world.cx, world.cy, world.arenaR0 + 400, 0, Math.PI * 2);
+  ctx.arc(world.cx, world.cy, world.arenaR, 0, Math.PI * 2, true);
+  const closing = 1 - (world.arenaR - world.arenaRmin) / (world.arenaR0 - world.arenaRmin);
+  ctx.fillStyle = `rgba(190,30,55,${0.10 + 0.14 * closing})`; ctx.fill("evenodd");
+  ctx.restore();
+  ctx.beginPath(); ctx.arc(world.cx, world.cy, world.arenaR, 0, Math.PI * 2);
+  ctx.strokeStyle = th.accent; ctx.lineWidth = 5; ctx.globalAlpha = 0.9; ctx.stroke();
+  ctx.lineWidth = 14; ctx.globalAlpha = 0.12; ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // arena hazard
+  if (world.hazard) drawHazard(world);
+
+  // pickup orbs
+  for (const p of world.pickups) {
+    const T = PICKUP[p.id];
+    const grow = Math.min(1, p.born * 4);
+    const pr = Math.max(2, p.r * grow), pulse = 0.5 + 0.5 * Math.sin(p.born * 6 + p.bob);
+    const arming = p.armT > 0;
+    ctx.save();
+    ctx.translate(p.x, p.y + Math.sin(p.born * 3 + p.bob) * 6);
+    // glow
+    const gg = ctx.createRadialGradient(0, 0, 0, 0, 0, pr * 2.4);
+    gg.addColorStop(0, T.color + (arming ? "66" : "aa")); gg.addColorStop(1, T.color + "00");
+    ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(0, 0, pr * 2.4, 0, Math.PI * 2); ctx.fill();
+    // arming telegraph — a shrinking countdown ring
+    if (arming) {
+      const k = p.armT / 1.2;
+      ctx.strokeStyle = T.color; ctx.globalAlpha = 0.9; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(0, 0, pr + 6 + k * 40, -Math.PI / 2, -Math.PI / 2 + (1 - k) * Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    // ring
+    ctx.strokeStyle = T.color; ctx.lineWidth = 4 + pulse * 3;
+    ctx.beginPath(); ctx.arc(0, 0, pr, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = "rgba(10,12,20,.72)"; ctx.beginPath(); ctx.arc(0, 0, Math.max(1, pr - 3), 0, Math.PI * 2); ctx.fill();
+    // glyph
+    ctx.fillStyle = "#fff"; ctx.font = "800 30px Segoe UI, sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(T.glyph, 0, 1);
+    ctx.textBaseline = "alphabetic";
+    ctx.restore();
+  }
+
+  // motion trails (under the balls)
+  for (const f of world.fighters) if (f.alive) drawTrail(f);
+
+  // impact rings
+  for (const r of world.rings) {
+    ctx.globalAlpha = Math.max(0, r.life * 2.6);
+    ctx.strokeStyle = r.c; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(r.x, r.y, r.rr, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // sparks
+  for (const p of world.sparks) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 2.4));
+    ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // thrown weapons
+  for (const p of world.projectiles) {
+    ctx.save();
+    ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+    ctx.fillStyle = p.col; ctx.strokeStyle = "rgba(255,255,255,.6)"; ctx.lineWidth = 2;
+    if (p.kind === "pistol") {
+      ctx.beginPath(); ctx.ellipse(0, 0, 11, 5, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (p.kind === "boomerang") {
+      ctx.beginPath(); ctx.moveTo(-12, 6); ctx.lineTo(2, -12); ctx.lineTo(12, 6); ctx.lineTo(2, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else { // shuriken
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) { ctx.rotate(Math.PI / 2); ctx.moveTo(0, 0); ctx.lineTo(3, -14); ctx.lineTo(-3, -14); }
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 0.5; ctx.strokeStyle = p.col; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.02, p.y - p.vy * 0.02); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // KO shards (weapon debris)
+  for (const s of world.shards) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, s.life * 1.6));
+    ctx.translate(s.x, s.y); ctx.rotate(s.rot);
+    ctx.strokeStyle = s.c; ctx.lineWidth = 4; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(-s.len / 2, 0); ctx.lineTo(s.len / 2, 0); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  // fighters
+  for (const f of world.fighters) if (f.alive) drawWeaponBall(f, world);
+
+  // flash
+  if (world.flash > 0.02) { ctx.fillStyle = `rgba(255,255,255,${Math.min(0.6, world.flash * 0.5)})`; ctx.fillRect(-W, -H, W * 3, H * 3); }
+
+  ctx.restore();
+
+  // confetti (winner card) — above the camera transform so it fills the frame
+  for (const c of world.confetti) {
+    ctx.save();
+    ctx.translate(c.x, c.y); ctx.rotate(c.rot);
+    ctx.fillStyle = c.c; ctx.fillRect(-c.w / 2, -c.h / 2, c.w, c.h);
+    ctx.restore();
+  }
+
+  // vignette (cinematic edge darkening, above the camera transform)
+  const vg = ctx.createRadialGradient(W / 2, world.cy, H * 0.30, W / 2, world.cy, H * 0.74);
+  vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.34)");
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+  // ---------- HUD ----------
+  drawHud(world);
+}
+
+function countdownLabel(t) {
+  return t < 0.75 ? "3" : t < 1.5 ? "2" : t < 2.25 ? "1" : "FIGHT!";
+}
+
+function drawHud(world) {
+  const th = world.theme;
+
+  // title (the menu screen draws its own hero title, so skip it there)
+  if (world.state !== "menu") {
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,.92)"; ctx.font = "800 44px Segoe UI, sans-serif";
+    ctx.fillText("WEAPON BALL ARENA", W / 2, 72);
+    ctx.font = "22px Segoe UI, sans-serif"; ctx.fillStyle = th.accent;
+    // seed is a dev detail — keep it off the recorded frames unless ?debug=1
+    ctx.fillText((AUTO && !DEBUG) ? th.name : th.name + "   ·   seed " + SEED, W / 2, 104);
+  }
+
+  // rule chips — mutator and/or hazard, under the theme name
+  if (world.state !== "menu" && (world.mutator || world.hazard)) {
+    ctx.textAlign = "center";
+    const chip = (label, tint, cy) => {
+      ctx.font = "800 26px Segoe UI, sans-serif";
+      const w = ctx.measureText(label).width + 40;
+      ctx.fillStyle = tint; ctx.globalAlpha = 0.16;
+      ctx.beginPath(); ctx.roundRect(W / 2 - w / 2, cy - 27, w, 40, 20); ctx.fill();
+      ctx.globalAlpha = 1; ctx.fillStyle = tint;
+      ctx.fillText(label, W / 2, cy);
+    };
+    let cy = 145;
+    if (world.mutator) { chip("⚡ " + world.mutator.name, world.mutator.tint, cy); cy += 46; }
+    if (world.hazard)  { chip("⚠ " + HAZARD_NAME[world.hazard], world.theme.accent, cy); cy += 46; }
+    if (world.mutator && world.state === "intro" && world.t < 2.4) {
+      ctx.globalAlpha = Math.min(1, (2.4 - world.t) * 1.5);
+      ctx.font = "600 29px Segoe UI, sans-serif"; ctx.fillStyle = "#fff";
+      ctx.fillText(world.mutator.blurb, W / 2, cy + 6);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---------- menu ----------
+  if (world.state === "menu") { drawMenu(); return; }
+
+  // HP bars (pushed down for each rule chip shown above them)
+  const bw = W - 160, x0 = 80;
+  let y = 148 + (world.mutator ? 66 : 0) + (world.hazard ? 46 : 0);
+  for (const f of world.fighters) {
+    const frac = Math.max(0, Math.min(1, f.hp / f.maxHp));
+    const chip = Math.max(0, Math.min(1, f.chipHp / f.maxHp));
+    const low = f.alive && frac > 0 && frac < 0.25;
+    const pulse = low ? 0.55 + 0.45 * Math.sin(world.t * 12) : 1;
+
+    ctx.textAlign = "left"; ctx.font = "bold 26px Segoe UI, sans-serif";
+    ctx.fillStyle = f.alive ? "#fff" : "rgba(255,255,255,.32)";
+    const roleTag = f._role ? "  — " + f._role : "";
+    ctx.fillText(f.name + (f.idx === world.playerIdx ? "  (YOU)" : "") + roleTag, x0, y - 8);
+    // active buff chip
+    if (f.buff && f.alive) {
+      const T = PICKUP[f.buff.id];
+      const nameW = ctx.measureText(f.name + roleTag).width;
+      const bt = " " + T.name + (f.buff.id === "shield" ? " ×" + f.shield : "") + " ";
+      ctx.font = "bold 18px Segoe UI, sans-serif";
+      const cw = ctx.measureText(bt).width;
+      ctx.fillStyle = T.color;
+      ctx.beginPath(); ctx.roundRect(x0 + nameW + 20, y - 26, cw, 24, 6); ctx.fill();
+      ctx.fillStyle = "#0a0c14"; ctx.fillText(bt, x0 + nameW + 20, y - 8);
+    }
+    ctx.textAlign = "right"; ctx.font = "bold 22px Segoe UI, sans-serif";
+    ctx.fillStyle = f.alive ? "rgba(255,255,255,.7)" : "#c9414f";
+    ctx.fillText(f.alive ? Math.ceil(f.hp) + "" : "OUT", x0 + bw, y - 8);
+
+    ctx.fillStyle = "rgba(255,255,255,.10)"; ctx.fillRect(x0, y, bw, 18);
+    ctx.fillStyle = "rgba(255,120,120,.45)"; ctx.fillRect(x0, y, bw * chip, 18);   // chip-damage trail
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = f.alive ? mixHex(f.tint, "#ffffff", 0.28) : "#4a4a4a";
+    ctx.fillRect(x0, y, bw * frac, 18);
+    ctx.globalAlpha = 1;
+    if (low) { ctx.strokeStyle = "#ff5060"; ctx.lineWidth = 2; ctx.strokeRect(x0 - 1, y - 1, bw + 2, 20); }
+    y += 44;
+  }
+
+  // countdown
+  if (world.state === "intro") {
+    const lbl = countdownLabel(world.t);
+    const seg = world.t < 0.75 ? world.t : world.t < 1.5 ? world.t - 0.75 : world.t < 2.25 ? world.t - 1.5 : world.t - 2.25;
+    const pop = 1 + Math.max(0, 0.25 - seg) * 3;                 // little scale-in each beat
+    ctx.save();
+    ctx.translate(W / 2, world.cy - 250); ctx.scale(pop, pop);
+    ctx.textAlign = "center";
+    ctx.font = (lbl === "FIGHT!" ? "800 130px" : "800 180px") + " Segoe UI, sans-serif";
+    ctx.lineWidth = 8; ctx.strokeStyle = "rgba(0,0,0,.4)"; ctx.strokeText(lbl, 0, 0);
+    ctx.fillStyle = lbl === "FIGHT!" ? th.accent : "#fff"; ctx.fillText(lbl, 0, 0);
+    ctx.restore();
+
+    // weapon name tags early in the countdown so viewers learn who's who
+    if (world.t < 1.9) {
+      ctx.globalAlpha = Math.min(1, (1.9 - world.t) * 2);
+      for (const f of world.fighters) {
+        ctx.textAlign = "center"; ctx.font = "bold 24px Segoe UI, sans-serif";
+        ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(f.x - 82, f.y + f._baseR + 8, 164, 32);
+        ctx.fillStyle = mixHex(f.tint, "#ffffff", 0.35);
+        ctx.fillText(f.name, f.x, f.y + f._baseR + 30);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // "WHO WINS? — comment your pick" engagement beat (recorded runs only)
+    if (AUTO && world.t > 0.5 && world.t < INTRO_SECONDS) {
+      const a = Math.min(1, (world.t - 0.5) * 3) * Math.min(1, (INTRO_SECONDS - world.t) * 4);
+      ctx.save(); ctx.globalAlpha = a; ctx.textAlign = "center";
+      ctx.font = "800 56px Segoe UI, sans-serif"; ctx.fillStyle = th.accent;
+      ctx.fillText("WHO WINS?", W / 2, world.cy + 300);
+      ctx.font = "600 34px Segoe UI, sans-serif"; ctx.fillStyle = "rgba(255,255,255,.9)";
+      ctx.fillText(world.fighters.map(f => f.name).join("  vs  "), W / 2, world.cy + 350);
+      ctx.font = "700 30px Segoe UI, sans-serif"; ctx.fillStyle = "#ffd27a";
+      ctx.fillText("comment your pick ▼", W / 2, world.cy + 398);
+      ctx.restore();
+    }
+  }
+
+  // big screen callout (FIRST BLOOD etc.)
+  if (world.callout) {
+    const a = Math.min(1, world.callout.t * 2);
+    ctx.save(); ctx.globalAlpha = a; ctx.textAlign = "center";
+    ctx.font = "800 74px Segoe UI, sans-serif";
+    ctx.lineWidth = 8; ctx.strokeStyle = "rgba(0,0,0,.4)";
+    ctx.strokeText(world.callout.txt, W / 2, world.cy - 320);
+    ctx.fillStyle = "#ffd27a"; ctx.fillText(world.callout.txt, W / 2, world.cy - 320);
+    ctx.restore();
+  }
+
+  // clock
+  if (world.state === "fight") {
+    const left = Math.max(0, BATTLE_MAX_SECONDS - world.t);
+    ctx.textAlign = "center"; ctx.font = "bold 32px Segoe UI, sans-serif";
+    ctx.fillStyle = left < 6 ? "#ff6070" : "rgba(255,255,255,.7)";
+    ctx.fillText(left.toFixed(1) + "s", W / 2, H - 64);
+  }
+
+  // winner card
+  if (world.state === "over" && world.winner) {
+    const wn = world.winner;
+    const inT = Math.min(1, world.t * 2.2);
+    ctx.save(); ctx.globalAlpha = inT;
+    ctx.fillStyle = "rgba(0,0,0,.5)"; ctx.fillRect(0, world.cy - 250, W, 540);
+    ctx.textAlign = "center";
+    fitFont(world.finishText, "800", 58, W - 120); ctx.fillStyle = th.accent;
+    ctx.fillText(world.finishText, W / 2, world.cy - 90);
+    fitFont(wn.name.toUpperCase(), "800", 104, W - 110); ctx.fillStyle = "#fff";
+    ctx.fillText(wn.name.toUpperCase(), W / 2, world.cy + 22);
+    ctx.font = "bold 38px Segoe UI, sans-serif"; ctx.fillStyle = "#ffd27a";
+    ctx.fillText("WINNER", W / 2, world.cy + 84);
+    // stat line — kills · HP left · (mutator)
+    const bits = [];
+    if (wn.kills > 0) bits.push(wn.kills + (wn.kills === 1 ? " KO" : " KOs"));
+    bits.push(Math.max(0, Math.ceil(wn.hp)) + " / " + Math.round(wn.maxHp) + " HP");
+    if (world.mutator) bits.push(world.mutator.name);
+    ctx.font = "600 30px Segoe UI, sans-serif"; ctx.fillStyle = "rgba(255,255,255,.82)";
+    ctx.fillText(bits.join("   ·   "), W / 2, world.cy + 138);
+    ctx.restore();
+    if (AUTO) {
+      ctx.globalAlpha = Math.max(0, Math.min(1, (world.t - 0.6) * 2));
+      ctx.textAlign = "center"; ctx.font = "800 44px Segoe UI, sans-serif"; ctx.fillStyle = "#fff";
+      ctx.fillText("▶ SUBSCRIBE — new fight every day", W / 2, world.cy + 216);
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.textAlign = "center"; ctx.font = "26px Segoe UI, sans-serif"; ctx.fillStyle = "rgba(255,255,255,.7)";
+      ctx.fillText("press R  ·  tap to fight again", W / 2, world.cy + 190);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------
+const input = { aimX: null, aimY: null, thrust: false, keys: new Set() };
+function pointerPos(e) {
+  const r = cv.getBoundingClientRect();
+  const px = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+  const py = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+  input.aimX = px / r.width * W;
+  input.aimY = py / r.height * H;
+}
+cv.addEventListener("pointerdown", e => {
+  pointerPos(e);
+  if (typeof advanceFromUI === "function" && advanceFromUI()) return;
+  input.thrust = true;
+});
+cv.addEventListener("pointermove", e => pointerPos(e));
+addEventListener("pointerup", () => { input.thrust = false; });
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  input.keys.add(k);
+  if ((k === " " || k === "enter")) {
+    if (world.state === "menu") {
+      if (MENU.screen === "weapons") MENU.screen = "home"; else startFromMenu();
+      return;
+    }
+    if (typeof advanceFromUI === "function" && advanceFromUI()) return;
+  }
+  if (k === " ") input.thrust = true;
+  if (k === "r") restart();
+  if (k === "m") location.href = toggleParam("mute");
+});
+addEventListener("keyup", e => { const k = e.key.toLowerCase(); input.keys.delete(k); if (k === " ") input.thrust = false; });
+addEventListener("blur", () => { input.keys.clear(); input.thrust = false; });
+function toggleParam(p) { const u = new URL(location.href); u.searchParams.set(p, u.searchParams.get(p) === "1" ? "0" : "1"); return u.toString(); }
+
+// ---------------------------------------------------------------------
+// Recording
+//   ?record=1   -> in-browser MediaRecorder -> downloadable .webm
+//                  (quick, works from a foreground tab, no Node needed)
+//   ?encode=wc  -> in-page WebCodecs H.264 encoder; the Node recorder
+//                  pulls the raw Annex-B stream and ffmpeg-wraps it to
+//                  mp4. ~5-10x faster than screenshotting every frame.
+// ---------------------------------------------------------------------
+let recorder = null, recChunks = [];
+function startRecording() {
+  try {
+    const stream = cv.captureStream(FPS);
+    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm";
+    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+    recorder.ondataavailable = e => { if (e.data.size) recChunks.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(recChunks, { type: "video/webm" });
+      const a = document.getElementById("dl");
+      a.href = URL.createObjectURL(blob); a.style.display = "inline-block";
+      window.__WBA_CLIP__ = blob;
+      window.__WBA_DONE__ = true;
+    };
+    recorder.start();
+  } catch (e) { console.warn("recording unavailable", e); }
+}
+function stopRecording() { if (recorder && recorder.state !== "inactive") recorder.stop(); }
+
+// --- WebCodecs encode path (driven by the Node recorder) -------------
+const WC_MODE = Q.get("encode") === "wc";
+const wc = { enc: null, chunks: [], n: 0, ok: false, error: null, flushed: false };
+window.__WBA_WC__ = wc;
+if (WC_MODE && typeof VideoEncoder !== "undefined") {
+  try {
+    wc.enc = new VideoEncoder({
+      output: (chunk) => {
+        const b = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(b);
+        wc.chunks.push(b);
+      },
+      error: (e) => { wc.error = String(e); console.error("VideoEncoder error", e); },
+    });
+    wc.enc.configure({
+      codec: "avc1.640028",              // H.264 High 4.0
+      width: W, height: H,
+      bitrate: 5_500_000, framerate: FPS,
+      avc: { format: "annexb" },
+      // "realtime": emit each frame promptly with a shallow internal queue.
+      // "quality" lets the encoder buffer/look-ahead, which under the Node
+      // driver's batched pull loop snowballs into a multi-second-per-frame
+      // stall on longer clips. The bitrate ceiling keeps quality fine.
+      latencyMode: "realtime",
+    });
+    wc.ok = true;
+  } catch (e) { wc.error = String(e); console.error("WebCodecs configure failed", e); }
+}
+// pull encoded bytes out to Node in base64 batches (called via page.evaluate)
+window.__WBA_WC_PULL__ = (max) => {
+  const take = wc.chunks.splice(0, max || 120);
+  return take.map((u) => {
+    let s = ""; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+};
+window.__WBA_WC_STATE__ = () => ({ ok: wc.ok, error: wc.error, pending: wc.chunks.length, encoded: wc.n, flushed: wc.flushed });
+window.__WBA_WC_FLUSH__ = async () => { if (wc.enc) { try { await wc.enc.flush(); } catch (e) { wc.error = String(e); } } wc.flushed = true; return window.__WBA_WC_STATE__(); };
+
+function wcEncodeFrame() {
+  if (!wc.ok) return;
+  const frame = new VideoFrame(cv, { timestamp: Math.round(wc.n * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+  wc.enc.encode(frame, { keyFrame: wc.n % (FPS * 2) === 0 });
+  frame.close();
+  wc.n++;
+}
+
+// ---------------------------------------------------------------------
+// Game loop
+//   Playable mode : wall-clock accumulator (feels right for a human).
+//   Director mode : FIXED sim-time per rendered frame, wall-clock
+//     independent -> byte-identical output for a given seed, and a
+//     browser that throttles requestAnimationFrame can't slow the
+//     match down. An external recorder (Node + Playwright) can also
+//     drive it one frame at a time via window.__WBA_TICK__().
+// ---------------------------------------------------------------------
+const STEPS_PER_FRAME = Math.max(1, Math.round((1 / FPS) / DT));   // sim steps per output frame
+const OVER_HOLD_FRAMES = Math.round(2.6 * FPS);                    // linger on the winner card
+const HARD_CAP_FRAMES  = Math.round((INTRO_SECONDS + BATTLE_MAX_SECONDS + 5) * FPS);
+// EXTERNAL is declared with the other run-config consts near the top
+if (AUTO) { const h = document.getElementById("hint"); if (h) h.hidden = true; }  // clean frames for the recorder
+
+// release-fund panel — real players only, never on recorded frames
+const fundEl = document.getElementById("fund");
+if (!AUTO && FUND_URL) {
+  document.getElementById("fundLink").href = FUND_URL;
+}
+const hintEl = document.getElementById("hint");
+function updateFund() {
+  if (fundEl) {
+    // only after a match, when a real player is most receptive; never on video
+    const show = !AUTO && FUND_URL && world.state === "over" && world.t > 0.8;
+    fundEl.style.display = show ? "block" : "none";
+  }
+  // the play hint belongs on the fight screen only
+  if (hintEl && !AUTO) hintEl.hidden = world.state !== "fight";
+}
+
+let world = new World();
+let acc = 0, last = performance.now(), overHold = 0, prevState = "intro";
+let outFrame = 0, lastBeep = null;
+
+window.__WBA_STATE__ = () => ({ state: world.state, t: world.t, frame: outFrame,
+  winner: world.winner && world.winner.name, done: !!window.__WBA_DONE__, seed: SEED });
+window.__WBA_META__ = () => ({
+  seed: SEED, theme: world.theme.name,
+  fighters: world.fighters.map(f => ({ name: f.name, kind: f.kind, tint: f.tint,
+    hp: Math.max(0, Math.round(f.hp)), alive: f.alive, isWinner: f === world.winner,
+    role: f._role || undefined, kills: f.kills || 0 })),
+  winner: world.winner && world.winner.name,
+  winnerKind: world.winner && world.winner.kind,
+  winnerHp: world.winner ? Math.max(0, Math.round(world.winner.hp)) : null,
+  winnerKills: world.winner ? (world.winner.kills || 0) : null,
+  mutator: MUT ? MUT.name : null,
+  mutatorId: MUT ? MUT.id : null,
+  hazard: world.hazard ? HAZARD_NAME[world.hazard] : null,
+  hazardId: world.hazard || null,
+  pickups: world.pickupLog || [],
+  finishText: world.finishText, hits: world.hits, n: world.n,
+});
+// full synth-audio timeline for the Node-side mixer (record/audio.js)
+window.__WBA_AUDIO_LOG__ = () => ({ fps: FPS, clock: +world.clock.toFixed(3), events: world.audioLog });
+
+function beepCountdown() {
+  const lbl = countdownLabel(world.t);
+  if (lbl !== lastBeep) {
+    lastBeep = lbl;
+    const big = lbl === "FIGHT!";
+    sfx.count(big ? 0 : 1);
+    world._logSfx("count", { big });
+  }
+}
+
+// advance EXACTLY one output frame of the simulation, then draw it.
+function tick() {
+  if (world.hitstop > 0) {
+    world.hitstop -= 1 / FPS;                 // freeze the sim, keep drawing (juice)
+    world.clock += 1 / FPS;                   // ...but output time still advances (keeps audio log in sync)
+  } else if (world.slowmo > 0) {
+    // final-KO slow motion — one small sim step per frame (~3.5x slower)
+    world.slowmo -= 1 / FPS;                  // count down in REAL time
+    world.step(DT * (2 / 7), input);
+    world.clock += 1 / FPS - DT * (2 / 7);    // top clock back up so audio stays aligned
+  } else {
+    for (let s = 0; s < STEPS_PER_FRAME; s++) {
+      world.step(DT, input);
+      if (world.state === "intro") beepCountdown();
+      if (world.hitstop > 0) break;
+    }
+  }
+  if (world.state !== prevState) {
+    if (world.state === "over") { sfx.win(); world._logSfx("win", {}); }
+    prevState = world.state;
+  }
+  render(world);
+  if (WC_MODE) wcEncodeFrame();
+  outFrame++;
+
+  if (world.state === "over") {
+    overHold++;
+    if (overHold >= OVER_HOLD_FRAMES && !window.__WBA_DONE__) { stopRecording(); window.__WBA_DONE__ = true; }
+  }
+  if (outFrame > HARD_CAP_FRAMES && !window.__WBA_DONE__) { stopRecording(); window.__WBA_DONE__ = true; }
+  return window.__WBA_STATE__();
+}
+window.__WBA_TICK__ = tick;
+
+function restart() {
+  const u = new URL(location.href);
+  u.searchParams.set("seed", (Math.random() * 2 ** 31) >>> 0);
+  location.href = u.toString();
+}
+// tap / key to interact with the menu, or replay after a match
+function advanceFromUI() {
+  if (world.state === "menu") { menuHit(input.aimX, input.aimY); return true; }
+  if (world.state === "over" && world.t > 0.6) { maybeShowAd(restart); return true; }
+  return false;
+}
+
+function frameAuto() {           // director: one fixed frame per rAF, no wall clock
+  tick();
+  if (!window.__WBA_DONE__) requestAnimationFrame(frameAuto);
+}
+
+function framePlay(now) {        // playable: wall-clock accumulator
+  let dtReal = (now - last) / 1000; last = now;
+  if (dtReal > 0.25) dtReal = 0.25;
+  if (world.state === "menu") { world._stepAmbient(dtReal); render(world); updateFund(); return requestAnimationFrame(framePlay); }
+  if (world.hitstop > 0) {
+    world.hitstop -= dtReal; acc = 0;
+  } else if (world.slowmo > 0) {
+    world.slowmo -= dtReal; acc = 0;
+    world.step(dtReal * (2 / 7), input);
+  } else {
+    acc += dtReal;
+    let steps = 0;
+    while (acc >= DT && steps < 24) {
+      world.step(DT, input); acc -= DT; steps++;
+      if (world.state === "intro") beepCountdown();
+      if (world.hitstop > 0) { acc = 0; break; }
+    }
+  }
+  if (world.state !== prevState) {
+    if (world.state === "over") { sfx.win(); adState.matches++; try { localStorage.setItem("wba_m", String(adState.matches)); } catch (e) {} }
+    prevState = world.state;
+  }
+  render(world);
+  updateFund();
+  requestAnimationFrame(framePlay);
+}
+
+if (!AUTO && !EXTERNAL) { world.state = "menu"; prevState = "menu"; }
+if (AUTO && RECORD) startRecording();
+if (EXTERNAL) {
+  window.__WBA_READY__ = true;   // Node driver calls window.__WBA_TICK__() itself
+} else if (AUTO) {
+  requestAnimationFrame(frameAuto);
+} else {
+  requestAnimationFrame(framePlay);
+}
+</script>
+</body>
+</html>
