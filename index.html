@@ -8,33 +8,45 @@
   :root { color-scheme: dark; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    width: 100%; height: 100%; background: #05060a; overflow: hidden;
-    font-family: "Segoe UI", system-ui, sans-serif; color: #e8e8ef;
+    width: 100%; height: 100%; background: #000; overflow: hidden;
+    font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #f5f5f7;
     touch-action: none; -webkit-user-select: none; user-select: none;
+    -webkit-font-smoothing: antialiased;
   }
   #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
-  canvas { display: block; background: #0a0c14; box-shadow: 0 0 60px rgba(0,0,0,.6); }
+  canvas { display: block; background: #08080a; box-shadow: 0 0 80px rgba(0,0,0,.7); }
   #hint {
-    position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
-    font-size: 12px; letter-spacing: .5px; opacity: .5; white-space: nowrap;
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font-size: 12px; letter-spacing: .3px; color: #6e6e73; white-space: nowrap;
     pointer-events: none;
   }
   #dl {
-    position: fixed; right: 12px; top: 12px; z-index: 10;
-    background: #2b7; color: #04120a; font-weight: 700; padding: 8px 14px;
-    border-radius: 8px; text-decoration: none; font-size: 13px; display: none;
+    position: fixed; right: 14px; top: 14px; z-index: 10;
+    background: rgba(255,255,255,.1); color: #f5f5f7; font-weight: 600;
+    padding: 9px 16px; border-radius: 980px; text-decoration: none; font-size: 13px;
+    display: none; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,.14);
   }
   #fund {
-    position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);
-    z-index: 10; display: none; text-align: center; width: min(92vw, 460px);
-    font-size: 13px; line-height: 1.5;
+    position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
+    z-index: 10; display: none; text-align: center; width: min(92vw, 480px);
+    font-size: 14px; line-height: 1.5;
+    animation: fundIn .5s cubic-bezier(.22,1,.36,1) both;
   }
-  #fund .goal { color: #cfd6e6; opacity: .85; margin-bottom: 8px; }
+  @keyframes fundIn { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+  #fund .goal {
+    color: #86868b; margin-bottom: 12px; letter-spacing: -.1px;
+    font-size: 15px; font-weight: 400;
+  }
   #fund a {
-    display: inline-block; background: #ffd27a; color: #1a1205; font-weight: 800;
-    padding: 10px 20px; border-radius: 980px; text-decoration: none; font-size: 14px;
-    letter-spacing: .2px;
+    display: inline-block; background: #0a84ff; color: #fff; font-weight: 600;
+    padding: 13px 26px; border-radius: 980px; text-decoration: none; font-size: 15px;
+    letter-spacing: -.1px; transition: transform .15s ease, background .15s ease;
+    font-family: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
+  #fund a:hover { background: #0a7aec; transform: scale(1.03); }
+  #fund a:active { transform: scale(.98); }
 </style>
 </head>
 <body>
@@ -1328,14 +1340,14 @@ function drawWeaponBall(f, world) {
   if (f.dmgPopT > 0 && f.eDmg > 0) {
     ctx.save();
     ctx.globalAlpha = Math.min(1, f.dmgPopT * 2);
-    ctx.fillStyle = "#ffd27a"; ctx.font = "bold 40px Segoe UI, sans-serif";
+    ctx.fillStyle = "#ff9f0a"; ctx.font = "600 40px " + UI_FONT;
     ctx.textAlign = "center";
-    ctx.fillText("-" + f.eDmg, f.x, f.y - r - 18 - (0.7 - f.dmgPopT) * 60);
+    ctx.fillText("−" + f.eDmg, f.x, f.y - r - 18 - (0.7 - f.dmgPopT) * 60);
     ctx.restore();
   }
   if (f._tag && f._tag.t > 0) {
     ctx.save(); ctx.globalAlpha = Math.min(1, f._tag.t * 1.5);
-    ctx.fillStyle = "#fff"; ctx.font = "bold 34px Segoe UI, sans-serif"; ctx.textAlign = "center";
+    ctx.fillStyle = UI_WHITE; ctx.font = "600 34px " + UI_FONT; ctx.textAlign = "center";
     ctx.fillText(f._tag.txt, f.x, f.y - r - 60);
     ctx.restore();
     f._tag.t -= 1 / FPS;
@@ -1407,7 +1419,7 @@ function shade(hex, amt) {
 function fitFont(text, weight, px, maxW) {
   let size = px;
   do {
-    ctx.font = weight + " " + size + "px Segoe UI, sans-serif";
+    ctx.font = weight + " " + size + "px " + UI_FONT;
     if (ctx.measureText(text).width <= maxW) break;
     size -= 4;
   } while (size > 16);
@@ -1469,6 +1481,18 @@ function drawHazard(world) {
    every frame; menuHit(x,y) consumes it.
    ===================================================================== */
 const MENU_ACCENT = "#0a84ff";
+// One shared type + colour system for every on-canvas surface (HUD, countdown,
+// winner card, callouts) so the whole game reads as one Apple-flavoured screen.
+const UI_FONT   = '"SF Pro Display", -apple-system, "Segoe UI", system-ui, sans-serif';
+const UI_ACCENT = "#0a84ff";
+const UI_WHITE  = "#f5f5f7";
+const UI_GRAY   = "#8e8e93";   // captions / secondary
+const UI_DIM    = "#6e6e73";   // tertiary hints
+// rounded-rect helper reused outside the menu (falls back if roundRect missing)
+function uiRoundRect(x, y, w, h, r) {
+  if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); return; }
+  mRound(x, y, w, h, r);
+}
 function mRound(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -1692,7 +1716,7 @@ function render(world) {
     ctx.beginPath(); ctx.arc(0, 0, pr, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = "rgba(10,12,20,.72)"; ctx.beginPath(); ctx.arc(0, 0, Math.max(1, pr - 3), 0, Math.PI * 2); ctx.fill();
     // glyph
-    ctx.fillStyle = "#fff"; ctx.font = "800 30px Segoe UI, sans-serif";
+    ctx.fillStyle = "#fff"; ctx.font = "700 30px " + UI_FONT;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(T.glyph, 0, 1);
     ctx.textBaseline = "alphabetic";
@@ -1783,30 +1807,34 @@ function drawHud(world) {
   // title (the menu screen draws its own hero title, so skip it there)
   if (world.state !== "menu") {
     ctx.textAlign = "center";
-    ctx.fillStyle = "rgba(255,255,255,.92)"; ctx.font = "800 44px Segoe UI, sans-serif";
-    ctx.fillText("WEAPON BALL ARENA", W / 2, 72);
-    ctx.font = "22px Segoe UI, sans-serif"; ctx.fillStyle = th.accent;
+    ctx.fillStyle = "rgba(245,245,247,.9)"; ctx.font = "600 40px " + UI_FONT;
+    if ("letterSpacing" in ctx) ctx.letterSpacing = "1px";
+    ctx.fillText("Weapon Ball Arena", W / 2, 72);
+    if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+    ctx.font = "400 22px " + UI_FONT; ctx.fillStyle = UI_GRAY;
     // seed is a dev detail — keep it off the recorded frames unless ?debug=1
-    ctx.fillText((AUTO && !DEBUG) ? th.name : th.name + "   ·   seed " + SEED, W / 2, 104);
+    ctx.fillText((AUTO && !DEBUG) ? th.name : th.name + "   ·   seed " + SEED, W / 2, 106);
   }
 
   // rule chips — mutator and/or hazard, under the theme name
   if (world.state !== "menu" && (world.mutator || world.hazard)) {
     ctx.textAlign = "center";
     const chip = (label, tint, cy) => {
-      ctx.font = "800 26px Segoe UI, sans-serif";
-      const w = ctx.measureText(label).width + 40;
-      ctx.fillStyle = tint; ctx.globalAlpha = 0.16;
-      ctx.beginPath(); ctx.roundRect(W / 2 - w / 2, cy - 27, w, 40, 20); ctx.fill();
+      ctx.font = "600 25px " + UI_FONT;
+      const w = ctx.measureText(label).width + 54;
+      ctx.fillStyle = tint; ctx.globalAlpha = 0.14;
+      uiRoundRect(W / 2 - w / 2, cy - 27, w, 42, 21); ctx.fill();
+      ctx.globalAlpha = 0.4; ctx.strokeStyle = tint; ctx.lineWidth = 1;
+      uiRoundRect(W / 2 - w / 2, cy - 27, w, 42, 21); ctx.stroke();
       ctx.globalAlpha = 1; ctx.fillStyle = tint;
       ctx.fillText(label, W / 2, cy);
     };
-    let cy = 145;
+    let cy = 146;
     if (world.mutator) { chip("⚡ " + world.mutator.name, world.mutator.tint, cy); cy += 46; }
     if (world.hazard)  { chip("⚠ " + HAZARD_NAME[world.hazard], world.theme.accent, cy); cy += 46; }
     if (world.mutator && world.state === "intro" && world.t < 2.4) {
       ctx.globalAlpha = Math.min(1, (2.4 - world.t) * 1.5);
-      ctx.font = "600 29px Segoe UI, sans-serif"; ctx.fillStyle = "#fff";
+      ctx.font = "400 28px " + UI_FONT; ctx.fillStyle = "rgba(245,245,247,.92)";
       ctx.fillText(world.mutator.blurb, W / 2, cy + 6);
       ctx.globalAlpha = 1;
     }
@@ -1824,32 +1852,33 @@ function drawHud(world) {
     const low = f.alive && frac > 0 && frac < 0.25;
     const pulse = low ? 0.55 + 0.45 * Math.sin(world.t * 12) : 1;
 
-    ctx.textAlign = "left"; ctx.font = "bold 26px Segoe UI, sans-serif";
-    ctx.fillStyle = f.alive ? "#fff" : "rgba(255,255,255,.32)";
+    ctx.textAlign = "left"; ctx.font = "600 25px " + UI_FONT;
+    ctx.fillStyle = f.alive ? UI_WHITE : "rgba(245,245,247,.32)";
     const roleTag = f._role ? "  — " + f._role : "";
-    ctx.fillText(f.name + (f.idx === world.playerIdx ? "  (YOU)" : "") + roleTag, x0, y - 8);
+    ctx.fillText(f.name + (f.idx === world.playerIdx ? "  (YOU)" : "") + roleTag, x0, y - 10);
     // active buff chip
     if (f.buff && f.alive) {
       const T = PICKUP[f.buff.id];
       const nameW = ctx.measureText(f.name + roleTag).width;
       const bt = " " + T.name + (f.buff.id === "shield" ? " ×" + f.shield : "") + " ";
-      ctx.font = "bold 18px Segoe UI, sans-serif";
-      const cw = ctx.measureText(bt).width;
+      ctx.font = "600 17px " + UI_FONT;
+      const cw = ctx.measureText(bt).width + 8;
       ctx.fillStyle = T.color;
-      ctx.beginPath(); ctx.roundRect(x0 + nameW + 20, y - 26, cw, 24, 6); ctx.fill();
-      ctx.fillStyle = "#0a0c14"; ctx.fillText(bt, x0 + nameW + 20, y - 8);
+      uiRoundRect(x0 + nameW + 20, y - 28, cw, 24, 12); ctx.fill();
+      ctx.fillStyle = "#08080a"; ctx.fillText(bt, x0 + nameW + 24, y - 11);
     }
-    ctx.textAlign = "right"; ctx.font = "bold 22px Segoe UI, sans-serif";
-    ctx.fillStyle = f.alive ? "rgba(255,255,255,.7)" : "#c9414f";
-    ctx.fillText(f.alive ? Math.ceil(f.hp) + "" : "OUT", x0 + bw, y - 8);
+    ctx.textAlign = "right"; ctx.font = "600 22px " + UI_FONT;
+    ctx.fillStyle = f.alive ? "rgba(245,245,247,.7)" : "#ff453a";
+    ctx.fillText(f.alive ? Math.ceil(f.hp) + "" : "OUT", x0 + bw, y - 10);
 
-    ctx.fillStyle = "rgba(255,255,255,.10)"; ctx.fillRect(x0, y, bw, 18);
-    ctx.fillStyle = "rgba(255,120,120,.45)"; ctx.fillRect(x0, y, bw * chip, 18);   // chip-damage trail
+    const barH = 14, barR = 7;
+    ctx.fillStyle = "rgba(255,255,255,.08)"; uiRoundRect(x0, y, bw, barH, barR); ctx.fill();
+    if (chip > 0.001) { ctx.fillStyle = "rgba(255,120,120,.4)"; uiRoundRect(x0, y, bw * chip, barH, barR); ctx.fill(); }
     ctx.globalAlpha = pulse;
-    ctx.fillStyle = f.alive ? mixHex(f.tint, "#ffffff", 0.28) : "#4a4a4a";
-    ctx.fillRect(x0, y, bw * frac, 18);
+    ctx.fillStyle = f.alive ? mixHex(f.tint, "#ffffff", 0.3) : "#4a4a4a";
+    if (frac > 0.001) { uiRoundRect(x0, y, bw * frac, barH, barR); ctx.fill(); }
     ctx.globalAlpha = 1;
-    if (low) { ctx.strokeStyle = "#ff5060"; ctx.lineWidth = 2; ctx.strokeRect(x0 - 1, y - 1, bw + 2, 20); }
+    if (low) { ctx.strokeStyle = "#ff453a"; ctx.lineWidth = 2; uiRoundRect(x0 - 1, y - 1, bw + 2, barH + 2, barR + 1); ctx.stroke(); }
     y += 44;
   }
 
@@ -1861,18 +1890,20 @@ function drawHud(world) {
     ctx.save();
     ctx.translate(W / 2, world.cy - 250); ctx.scale(pop, pop);
     ctx.textAlign = "center";
-    ctx.font = (lbl === "FIGHT!" ? "800 130px" : "800 180px") + " Segoe UI, sans-serif";
-    ctx.lineWidth = 8; ctx.strokeStyle = "rgba(0,0,0,.4)"; ctx.strokeText(lbl, 0, 0);
-    ctx.fillStyle = lbl === "FIGHT!" ? th.accent : "#fff"; ctx.fillText(lbl, 0, 0);
+    ctx.font = (lbl === "FIGHT!" ? "300 128px " : "200 190px ") + UI_FONT;
+    ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = 32; ctx.shadowOffsetY = 4;
+    ctx.fillStyle = lbl === "FIGHT!" ? UI_ACCENT : UI_WHITE; ctx.fillText(lbl, 0, 0);
     ctx.restore();
 
     // weapon name tags early in the countdown so viewers learn who's who
     if (world.t < 1.9) {
       ctx.globalAlpha = Math.min(1, (1.9 - world.t) * 2);
       for (const f of world.fighters) {
-        ctx.textAlign = "center"; ctx.font = "bold 24px Segoe UI, sans-serif";
-        ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(f.x - 82, f.y + f._baseR + 8, 164, 32);
-        ctx.fillStyle = mixHex(f.tint, "#ffffff", 0.35);
+        ctx.textAlign = "center"; ctx.font = "600 24px " + UI_FONT;
+        const tw = ctx.measureText(f.name).width + 32;
+        ctx.fillStyle = "rgba(8,8,10,.6)";
+        uiRoundRect(f.x - tw / 2, f.y + f._baseR + 8, tw, 34, 17); ctx.fill();
+        ctx.fillStyle = mixHex(f.tint, "#ffffff", 0.4);
         ctx.fillText(f.name, f.x, f.y + f._baseR + 30);
       }
       ctx.globalAlpha = 1;
@@ -1882,11 +1913,11 @@ function drawHud(world) {
     if (AUTO && world.t > 0.5 && world.t < INTRO_SECONDS) {
       const a = Math.min(1, (world.t - 0.5) * 3) * Math.min(1, (INTRO_SECONDS - world.t) * 4);
       ctx.save(); ctx.globalAlpha = a; ctx.textAlign = "center";
-      ctx.font = "800 56px Segoe UI, sans-serif"; ctx.fillStyle = th.accent;
+      ctx.font = "700 56px " + UI_FONT; ctx.fillStyle = UI_ACCENT;
       ctx.fillText("WHO WINS?", W / 2, world.cy + 300);
-      ctx.font = "600 34px Segoe UI, sans-serif"; ctx.fillStyle = "rgba(255,255,255,.9)";
+      ctx.font = "500 34px " + UI_FONT; ctx.fillStyle = "rgba(245,245,247,.92)";
       ctx.fillText(world.fighters.map(f => f.name).join("  vs  "), W / 2, world.cy + 350);
-      ctx.font = "700 30px Segoe UI, sans-serif"; ctx.fillStyle = "#ffd27a";
+      ctx.font = "600 30px " + UI_FONT; ctx.fillStyle = "#ff9f0a";
       ctx.fillText("comment your pick ▼", W / 2, world.cy + 398);
       ctx.restore();
     }
@@ -1896,18 +1927,17 @@ function drawHud(world) {
   if (world.callout) {
     const a = Math.min(1, world.callout.t * 2);
     ctx.save(); ctx.globalAlpha = a; ctx.textAlign = "center";
-    ctx.font = "800 74px Segoe UI, sans-serif";
-    ctx.lineWidth = 8; ctx.strokeStyle = "rgba(0,0,0,.4)";
-    ctx.strokeText(world.callout.txt, W / 2, world.cy - 320);
-    ctx.fillStyle = "#ffd27a"; ctx.fillText(world.callout.txt, W / 2, world.cy - 320);
+    ctx.font = "700 74px " + UI_FONT;
+    ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = 24; ctx.shadowOffsetY = 3;
+    ctx.fillStyle = "#ff9f0a"; ctx.fillText(world.callout.txt, W / 2, world.cy - 320);
     ctx.restore();
   }
 
   // clock
   if (world.state === "fight") {
     const left = Math.max(0, BATTLE_MAX_SECONDS - world.t);
-    ctx.textAlign = "center"; ctx.font = "bold 32px Segoe UI, sans-serif";
-    ctx.fillStyle = left < 6 ? "#ff6070" : "rgba(255,255,255,.7)";
+    ctx.textAlign = "center"; ctx.font = "600 32px " + UI_FONT;
+    ctx.fillStyle = left < 6 ? "#ff453a" : "rgba(245,245,247,.7)";
     ctx.fillText(left.toFixed(1) + "s", W / 2, H - 64);
   }
 
@@ -1916,30 +1946,37 @@ function drawHud(world) {
     const wn = world.winner;
     const inT = Math.min(1, world.t * 2.2);
     ctx.save(); ctx.globalAlpha = inT;
-    ctx.fillStyle = "rgba(0,0,0,.5)"; ctx.fillRect(0, world.cy - 250, W, 540);
+    // centred frosted card rather than an edge-to-edge band
+    const cardW = Math.min(W - 120, 900), cardX = (W - cardW) / 2, cardY = world.cy - 230;
+    ctx.fillStyle = "rgba(18,18,20,.82)";
+    uiRoundRect(cardX, cardY, cardW, 500, 40); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.1)"; ctx.lineWidth = 1;
+    uiRoundRect(cardX, cardY, cardW, 500, 40); ctx.stroke();
     ctx.textAlign = "center";
-    fitFont(world.finishText, "800", 58, W - 120); ctx.fillStyle = th.accent;
-    ctx.fillText(world.finishText, W / 2, world.cy - 90);
-    fitFont(wn.name.toUpperCase(), "800", 104, W - 110); ctx.fillStyle = "#fff";
-    ctx.fillText(wn.name.toUpperCase(), W / 2, world.cy + 22);
-    ctx.font = "bold 38px Segoe UI, sans-serif"; ctx.fillStyle = "#ffd27a";
-    ctx.fillText("WINNER", W / 2, world.cy + 84);
+    fitFont(world.finishText, "600", 54, cardW - 100); ctx.fillStyle = UI_ACCENT;
+    ctx.fillText(world.finishText, W / 2, world.cy - 96);
+    fitFont(wn.name.toUpperCase(), "700", 100, cardW - 90); ctx.fillStyle = UI_WHITE;
+    ctx.fillText(wn.name.toUpperCase(), W / 2, world.cy + 14);
+    ctx.font = "600 26px " + UI_FONT; ctx.fillStyle = UI_GRAY;
+    if ("letterSpacing" in ctx) ctx.letterSpacing = "3px";
+    ctx.fillText("WINNER", W / 2, world.cy + 74);
+    if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
     // stat line — kills · HP left · (mutator)
     const bits = [];
     if (wn.kills > 0) bits.push(wn.kills + (wn.kills === 1 ? " KO" : " KOs"));
     bits.push(Math.max(0, Math.ceil(wn.hp)) + " / " + Math.round(wn.maxHp) + " HP");
     if (world.mutator) bits.push(world.mutator.name);
-    ctx.font = "600 30px Segoe UI, sans-serif"; ctx.fillStyle = "rgba(255,255,255,.82)";
-    ctx.fillText(bits.join("   ·   "), W / 2, world.cy + 138);
+    ctx.font = "400 30px " + UI_FONT; ctx.fillStyle = "rgba(245,245,247,.8)";
+    ctx.fillText(bits.join("   ·   "), W / 2, world.cy + 132);
     ctx.restore();
     if (AUTO) {
       ctx.globalAlpha = Math.max(0, Math.min(1, (world.t - 0.6) * 2));
-      ctx.textAlign = "center"; ctx.font = "800 44px Segoe UI, sans-serif"; ctx.fillStyle = "#fff";
+      ctx.textAlign = "center"; ctx.font = "600 44px " + UI_FONT; ctx.fillStyle = UI_WHITE;
       ctx.fillText("▶ SUBSCRIBE — new fight every day", W / 2, world.cy + 216);
       ctx.globalAlpha = 1;
     } else {
-      ctx.textAlign = "center"; ctx.font = "26px Segoe UI, sans-serif"; ctx.fillStyle = "rgba(255,255,255,.7)";
-      ctx.fillText("press R  ·  tap to fight again", W / 2, world.cy + 190);
+      ctx.textAlign = "center"; ctx.font = "400 26px " + UI_FONT; ctx.fillStyle = UI_DIM;
+      ctx.fillText("press R  ·  tap to fight again", W / 2, world.cy + 200);
     }
   }
 }
