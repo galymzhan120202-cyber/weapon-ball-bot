@@ -54,6 +54,12 @@ VIDEO_HEIGHT = int(os.getenv('VIDEO_HEIGHT', '1920'))
 MUSIC_VOLUME = float(os.getenv('MUSIC_VOLUME', '0.15'))
 SFX_VOLUME = float(os.getenv('SFX_VOLUME', '0.9'))
 
+# Playable browser build (this project's own GitHub Pages) + shared donation page.
+# The Ko-fi page is deliberately shared with weapon-ball-arena so all donations
+# pool toward one App Store / Google Play release fund.
+PLAY_URL = os.getenv('WBALL_PLAY_URL', 'https://galymzhan120202-cyber.github.io/weapon-ball-bot/')
+FUND_URL = os.getenv('WBALL_FUND_URL', 'https://ko-fi.com/weaponballarena')
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -123,7 +129,13 @@ def build_title_and_description(fighter_names, winner_name):
     weapon_tags = ' '.join(f"#{name.lower().replace(' ', '')}" for name in fighter_names[:3])
     hashtags = f"{weapon_tags} {pick_rotating_tags()}"
     body = random.choice(DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
-    description = f"{body}\n\n{hashtags}"
+    links = []
+    if PLAY_URL:
+        links.append(f"🎮 Play it free in your browser: {PLAY_URL}")
+    if FUND_URL:
+        links.append(f"🎯 Help bring Weapon Ball to the App Store & Google Play: {FUND_URL}")
+    link_block = ("\n".join(links) + "\n\n") if links else ""
+    description = f"{body}\n\n{link_block}{hashtags}"
     tags = list(fighter_names) + ["weapon ball", "battle", "physics simulation", "shorts"]
     return title, description, tags
 
