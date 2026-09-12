@@ -35,7 +35,10 @@ TELEGRAM_NOTIFY_CHAT_ID = os.getenv('TELEGRAM_NOTIFY_CHAT_ID', '')
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
 RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
 BATTLE_MAX_SECONDS = int(os.getenv('BATTLE_MAX_SECONDS', '28'))
-BATTLE_MIN_SECONDS = int(os.getenv('BATTLE_MIN_SECONDS', '13'))
+# Lowered from 13: faster weapons + smaller arena now put the real KO at a
+# ~10-11s median, so a 13s floor was forcing 2-4s of a lone winner drifting
+# with nothing left to fight before the finale banner could appear.
+BATTLE_MIN_SECONDS = int(os.getenv('BATTLE_MIN_SECONDS', '8'))
 
 AVOID_REPEAT_LOOKBACK = int(os.getenv('AVOID_REPEAT_LOOKBACK', '12'))
 AVOID_REPEAT_MAX_ATTEMPTS = int(os.getenv('AVOID_REPEAT_MAX_ATTEMPTS', '6'))

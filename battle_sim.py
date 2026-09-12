@@ -752,7 +752,9 @@ def get_font(size):
 
 # Countdown hold before the fight starts ("3", "2", "1", "FIGHT!"), shared
 # between the video renderer and the SFX builder so their timelines line up.
-INTRO_SECONDS = 2.0
+# Cut from 2.0s: a scrolling Shorts viewer swipes away in the first second,
+# and a slower countdown was pure dead time before any action was visible.
+INTRO_SECONDS = 1.2
 
 # A "cold open" prepended before the countdown even starts: a quick punched-
 # in, flash-cut freeze on the fight's finishing blow (no OUT!/victory text
@@ -764,7 +766,10 @@ INTRO_SECONDS = 2.0
 COLD_OPEN_SECONDS = 0.9
 
 PHYSICS_HZ = 120
-START_HP = 100.0
+# Lowered from 100 so a fight needs fewer real hits to reach a KO — combined
+# with the faster/spinnier weapons and the smaller arena below, fights finish
+# sooner instead of drifting to the max_seconds cap.
+START_HP = 75.0
 
 # Fewer fighters = bigger icons/hitboxes; more fighters = smaller, so a 4-way
 # melee doesn't turn into an unreadable pile in the same arena footprint.
@@ -775,7 +780,7 @@ ICON_SIZE_BY_N = {2: 190, 3: 164, 4: 141}
 N_FIGHTERS_WEIGHTS = {2: 55, 3: 28, 4: 17}
 
 
-def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighters=None):
+def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighters=None):
     rng = random.Random(seed)
     # Crit rolls draw from their own stream so adding/tuning the crit feature
     # never reshuffles spawn positions, AI jitter or damage variance — the
@@ -794,10 +799,13 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     base_radius = RADIUS_BY_N[n_fighters]
     icon_size = ICON_SIZE_BY_N[n_fighters]
 
+    # Smaller footprint than before (was 0.055/0.945/0.965) so fighters cross
+    # paths and clash more often per second — less drifting in open space,
+    # more actual fighting.
     top_arena = int(h * 0.24)
-    bottom_arena = int(h * 0.965)
-    left_arena = int(w * 0.055)
-    right_arena = int(w * 0.945)
+    bottom_arena = int(h * 0.92)
+    left_arena = int(w * 0.10)
+    right_arena = int(w * 0.90)
     center_x = (left_arena + right_arena) / 2
     center_y = (top_arena + bottom_arena) / 2
 
@@ -809,7 +817,12 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         body.position = (x, y)
         rad = math.radians(angle_deg)
         body.velocity = (math.cos(rad) * speed, math.sin(rad) * speed)
-        body.angular_velocity = rng.uniform(-7.5, 7.5)
+        # Every weapon spins continuously and visibly from the moment it
+        # launches — a wide symmetric range around zero used to let a fair
+        # number of draws land near-stationary, which read as "just bouncing"
+        # rather than "fighting". Sign is still random (either rotation
+        # direction), only the magnitude floor is raised.
+        body.angular_velocity = rng.choice([-1, 1]) * rng.uniform(10.0, 16.0)
         shape = pymunk.Circle(body, radius)
         shape.elasticity = elasticity
         # Friction (fighter-vs-fighter clashes only, walls stay at 0 so
@@ -821,7 +834,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
         space.add(body, shape)
         return body, shape
 
-    speed0 = min(w, h) * 0.50
+    speed0 = min(w, h) * 0.62
     spawn_r = min(right_arena - left_arena, bottom_arena - top_arena) * (0.30 if n_fighters <= 2 else 0.33)
     angle_offset = rng.uniform(0, 360)
 
@@ -1183,8 +1196,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=13, n_fighte
     # starting size at the buzzer. Fighters are softly shoved back inside the
     # shrinking box each step; the full-size static walls stay as a hard
     # backstop. Keeps the finish tight and kills any late-game drifting.
-    ARENA_SHRINK_START_FRAC = 0.40
-    ARENA_SHRINK_MIN_SCALE = 0.58
+    ARENA_SHRINK_START_FRAC = 0.32
+    ARENA_SHRINK_MIN_SCALE = 0.48
 
     def _arena_bounds_at(step):
         p = step / max_steps
@@ -1906,7 +1919,17 @@ def build_battle_clip(battle):
     # blending problem the background fix exists to solve.
     vignette_mask = np.clip(1.0 - 0.20 * np.clip(vdist - 0.55, 0, None) ** 1.4, 0.72, 1.0).astype(np.float32)[:, :, None]
 
+    # Loop-friendly ending: the very last stretch of the clip ramps toward
+    # the same white flash the cold-open teaser opens on (see `flash_amt`
+    # below), instead of ending on a flat dark victory-banner frame. Shorts
+    # autoplay loops straight from the last frame back to the first, so
+    # matching the brightness at both ends turns that hard cut into
+    # something closer to a seamless loop.
+    LOOP_FADE_SECONDS = 0.25
+    total_clip_seconds = COLD_OPEN_SECONDS + (intro_frames + n_frames) / fps
+
     def make_frame(t):
+        orig_t = t
         if t < COLD_OPEN_SECONDS:
             # Render the normal frame for the finishing-blow moment (via a
             # self-recursive call at the shifted timestamp it actually
@@ -2467,13 +2490,16 @@ def build_battle_clip(battle):
         arr = gray + (arr - gray) * 1.32
         arr = (arr - 128.0) * 1.08 + 128.0
         arr *= vignette_mask
+        loop_fade_start = total_clip_seconds - LOOP_FADE_SECONDS
+        if orig_t > loop_fade_start:
+            flash_amt = min(1.0, (orig_t - loop_fade_start) / LOOP_FADE_SECONDS) ** 1.5
+            arr = arr + (255 - arr) * flash_amt * 0.85
         arr = np.clip(arr, 0, 255).astype(np.uint8)
         if shake_dx or shake_dy:
             arr = np.roll(arr, (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
         return arr
 
-    duration = COLD_OPEN_SECONDS + (intro_frames + n_frames) / fps
-    clip = VideoClip(make_frame, duration=duration).with_fps(fps)
+    clip = VideoClip(make_frame, duration=total_clip_seconds).with_fps(fps)
     return clip
 
 
