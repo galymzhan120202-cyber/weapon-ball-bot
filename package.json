@@ -1,0 +1,6 @@
+{
+  "name": "weapon-ball-arena",
+  "private": true,
+  "scripts": { "test": "node --test tests/browser.test.cjs", "check": "node --check web/game.js && node --check web/ui.js" },
+  "devDependencies": { "playwright": "1.62.1" }
+}

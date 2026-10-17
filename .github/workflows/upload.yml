@@ -43,8 +43,9 @@ jobs:
           cat > .env << 'EOF'
           TELEGRAM_NOTIFY_TOKEN=${{ secrets.WBALL_TELEGRAM_NOTIFY_TOKEN }}
           TELEGRAM_NOTIFY_CHAT_ID=${{ secrets.WBALL_TELEGRAM_NOTIFY_CHAT_ID }}
-          BATTLE_MIN_SECONDS=13
+          BATTLE_MIN_SECONDS=8
           BATTLE_MAX_SECONDS=28
+          BATTLE_CANDIDATES=6
           MUSIC_VOLUME=0.15
           SFX_VOLUME=0.9
           YOUTUBE_CATEGORY_ID=20
@@ -62,3 +63,10 @@ jobs:
 
       - name: Видео құру және YouTube-ке жүктеу
         run: python -c "from video_gen import generate_video; generate_video()"
+
+      - name: Шайқас сапасының есебін сақтау
+        uses: actions/upload-artifact@v4
+        with:
+          name: battle-quality-${{ github.run_number }}
+          path: battle_manifest.json
+          retention-days: 30

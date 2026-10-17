@@ -8,9 +8,13 @@ youtube_token.json
 client_secrets.json
 
 # Уақытша файлдар
-TEMP_MPY_*.mp4
+*TEMP_MPY_*.mp4
 final_shorts.mp4
 thumbnail.jpg
+battle_manifest.json
+preview.mp4
+preview.json
+balance_report.json
 music/_openverse_temp.mp3
 
 # Логтар
@@ -53,3 +57,8 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local UI verification and JavaScript dependencies
+.work/
+node_modules/
+test-results/

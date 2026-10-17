@@ -756,16 +756,23 @@ def get_font(size):
 # and a slower countdown was pure dead time before any action was visible.
 INTRO_SECONDS = 1.2
 
-# A "cold open" prepended before the countdown even starts: a quick punched-
-# in, flash-cut freeze on the fight's finishing blow (no OUT!/victory text
-# visible yet, so it teases impact without spoiling the winner), the way a
-# lot of viral Shorts/Reels open on a payoff moment before rewinding to "how
-# did we get here" — a first-impression hook for a viewer scrolling past in
-# a muted, autoplaying feed. Shared between the video renderer and the SFX
-# builder so their timelines line up, same pattern as INTRO_SECONDS.
+# A moving excerpt of a strong exchange before the first KO opens the clip.
+# It shows real action without revealing the winner. Shared with the SFX
+# builder so the opening sting and visual timeline stay aligned.
 COLD_OPEN_SECONDS = 0.9
 
 PHYSICS_HZ = 120
+PAIR_HIT_COOLDOWN = 0.10  # one exchange per pair; overlapping sub-shapes cannot stack damage
+MAX_SPIN = 24.0
+# Small damage adjustments compensate for measured reach/contact advantages.
+# These affect actual hits, never select winners. Recheck with analyze_balance.py.
+WEAPON_DAMAGE_TUNING = {
+    "sword": 1.18, "whip": 1.18, "tomahawk": 1.14, "rapier": 1.12,
+    "spear": 1.10, "nunchaku": 1.10, "claws": 1.08, "staff": 1.06,
+    "dagger": 1.04, "halberd": .86, "boomerang": .86, "hammer": .90,
+    "scythe": .93, "dual_daggers": .94, "cleaver": .96, "warhammer": .98,
+    "pistol": .97,
+}
 # Lowered from 100 so a fight needs fewer real hits to reach a KO — combined
 # with the faster/spinnier weapons and the smaller arena below, fights finish
 # sooner instead of drifting to the max_seconds cap.
@@ -780,7 +787,18 @@ ICON_SIZE_BY_N = {2: 190, 3: 164, 4: 141}
 N_FIGHTERS_WEIGHTS = {2: 55, 3: 28, 4: 17}
 
 
-def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighters=None):
+def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighters=None, weapons=None):
+    """Simulate a real match. min_seconds is an editorial target, never a post-KO delay.
+
+    Physics always runs at 120 Hz; frames are sampled independently of output FPS.
+    Optional weapon kinds make balance sweeps and reproducible matchups possible.
+    """
+    if not isinstance(fps, int) or not 1 <= fps <= PHYSICS_HZ:
+        raise ValueError("fps must be an integer between 1 and 120")
+    if w < 240 or h < 400 or not 1 / PHYSICS_HZ <= max_seconds <= 120 or not 0 <= min_seconds <= max_seconds:
+        raise ValueError("Invalid dimensions or battle duration")
+    if n_fighters is not None and n_fighters not in (2, 3, 4):
+        raise ValueError("n_fighters must be 2, 3, or 4")
     rng = random.Random(seed)
     # Crit rolls draw from their own stream so adding/tuning the crit feature
     # never reshuffles spawn positions, AI jitter or damage variance — the
@@ -794,7 +812,14 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
         weights = list(N_FIGHTERS_WEIGHTS.values())
         n_fighters = rng.choices(options, weights=weights, k=1)[0]
 
-    fighters = [dict(f) for f in rng.sample(WEAPON_POOL, n_fighters)]
+    if weapons is not None:
+        lookup = {f["kind"]: f for f in WEAPON_POOL}
+        if len(weapons) not in (2, 3, 4) or any(k not in lookup for k in weapons):
+            raise ValueError("weapons must contain 2 to 4 valid weapon kinds")
+        n_fighters = len(weapons)
+        fighters = [dict(lookup[k]) for k in weapons]
+    else:
+        fighters = [dict(f) for f in rng.sample(WEAPON_POOL, n_fighters)]
     _boost_color_contrast(fighters, rng)
     base_radius = RADIUS_BY_N[n_fighters]
     icon_size = ICON_SIZE_BY_N[n_fighters]
@@ -867,7 +892,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
         ang = math.radians(angle_offset + i * 360 / n_fighters)
         x = center_x + math.cos(ang) * spawn_r
         y = center_y + math.sin(ang) * spawn_r
-        aim = math.degrees(math.atan2(center_y - y, center_x - x)) + rng.uniform(-25, 25)
+        aim = math.degrees(math.atan2(center_y - y, center_x - x)) + rng.uniform(-12, 12)
         kind = fighters[i]["kind"]
         fighter_radius = base_radius * WEAPON_REACH.get(kind, 1.0)
         phys = _MATERIAL_PHYSICS.get(fighters[i]["material"], _MATERIAL_PHYSICS["metal"])
@@ -1001,6 +1026,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
 
     hp = [START_HP] * n_fighters
     alive = [True] * n_fighters
+    eliminated_at = [None] * n_fighters
     ctype_to_idx = {i + 1: i for i in range(n_fighters)}
     hit_log = []  # (step_index, x, y, total_dmg, i1, i2, hit_type) — hit_type
     # is one of "block" (both sides only touched with a passive body/guard
@@ -1018,6 +1044,9 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
     muzzle_flash_log = []  # (step_index, x, y, angle_deg)
     projectile_hit_log = []  # (step_index, x, y, dmg, shooter_idx, target_idx)
     step_counter = {"n": 0}
+    pending_hits = {}
+    last_pair_hit = {}
+    peak_speed = 0.0
 
     def on_hit(arbiter, space, data):
         ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
@@ -1031,7 +1060,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
             if fi == proj["shooter"]:
                 return True  # never hits its own shooter
             if fi is not None and alive[fi]:
-                dmg = rng.uniform(4.0, 7.5)
+                dmg = rng.uniform(4.0, 7.5) * WEAPON_DAMAGE_TUNING.get(fighters[proj["shooter"]]["kind"], 1.0)
                 hp[fi] = max(0.0, hp[fi] - dmg)
                 cx_, cy_ = proj["body"].position.x, proj["body"].position.y
                 projectile_hit_log.append((step_counter["n"], cx_, cy_, round(dmg), proj["shooter"], fi))
@@ -1058,7 +1087,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
                 wall_hit_log.append((step_counter["n"], cx, cy))
             return True
         i1, i2 = ctype_to_idx[ct1], ctype_to_idx[ct2]
-        if not alive[i1] or not alive[i2]:
+        if i1 == i2 or not alive[i1] or not alive[i2]:
             return True
 
         # Segmented hitboxes: which physical shape each fighter actually hit
@@ -1068,6 +1097,24 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
         # near the top of the file for the full rationale.
         role1 = shape_role.get(arbiter.shapes[0], "body")
         role2 = shape_role.get(arbiter.shapes[1], "body")
+        pair = tuple(sorted((i1, i2)))
+        if step_counter["n"] - last_pair_hit.get(pair, -PHYSICS_HZ) < round(PAIR_HIT_COOLDOWN * PHYSICS_HZ):
+            return True
+        cps = arbiter.contact_point_set.points
+        cx, cy = (cps[0].point_a.x, cps[0].point_a.y) if cps else (bodies[i1].position.x, bodies[i1].position.y)
+        impulse = arbiter.total_impulse.length
+        priority = ((role1 == "active") + (role2 == "active"), impulse)
+        # A body and several blade circles can contact in one step. Resolve the
+        # strongest actual blade contact once, after the physics solver finishes.
+        if pair not in pending_hits or priority > pending_hits[pair][0]:
+            pending_hits[pair] = (priority, i1, i2, role1, role2, impulse, cx, cy)
+        return True
+
+    def resolve_hit(event):
+        _, i1, i2, role1, role2, impulse, cx, cy = event
+        if not alive[i1] or not alive[i2] or hp[i1] <= 0 or hp[i2] <= 0:
+            return
+        last_pair_hit[tuple(sorted((i1, i2)))] = step_counter["n"]
 
         def _hit_mult(attacker_role, victim_role, attacker_kind):
             if attacker_role != "active":
@@ -1094,8 +1141,10 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
         else:
             hit_type = "block"
 
-        impulse = arbiter.total_impulse.length
-        base = min(17.0, max(1.7, impulse * 0.0145))
+        # More readable exchanges instead of two huge hits. The late ramp
+        # resolves a drawn-out duel without forcing a particular winner.
+        tempo = 1.0 + max(0.0, step_counter["n"] / max_steps - .60) * 1.5
+        base = min(11.0, max(1.2, impulse * 0.0105)) * tempo
         p1, p2 = fighters[i1]["power"], fighters[i2]["power"]
         # A weapon's own spin adds extra bite to the hit it lands — a
         # chainsaw or shuriken caught mid-spin cuts harder than one moving
@@ -1105,6 +1154,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
         pr = (p2 / p1) ** POWER_DMG_EXPONENT
         d1 = base * pr * (1.0 + spin2) * rng.uniform(0.82, 1.18) * mult_for_d1
         d2 = base * (1.0 / pr) * (1.0 + spin1) * rng.uniform(0.82, 1.18) * mult_for_d2
+        d1 *= WEAPON_DAMAGE_TUNING.get(fighters[i2]["kind"], 1.0)
+        d2 *= WEAPON_DAMAGE_TUNING.get(fighters[i1]["kind"], 1.0)
 
         # Advance both side-RNG streams exactly once per fighter-vs-fighter
         # hit, no matter the outcome, so tuning one feature never reshuffles
@@ -1122,8 +1173,6 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
         hp[i1] = max(0.0, hp[i1] - d1)
         hp[i2] = max(0.0, hp[i2] - d2)
 
-        cps = arbiter.contact_point_set.points
-        cx, cy = (cps[0].point_a.x, cps[0].point_a.y) if cps else (bodies[i1].position.x, bodies[i1].position.y)
         hit_log.append((step_counter["n"], cx, cy, round(d1 + d2), i1, i2, hit_type, is_crit))
 
         # A real (non-blocked) exchange gets an explicit extra separating
@@ -1160,9 +1209,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
     space.on_collision(post_solve=on_hit)
 
     dt = 1.0 / PHYSICS_HZ
-    steps_per_frame = max(1, PHYSICS_HZ // fps)
     max_steps = int(max_seconds * PHYSICS_HZ)
-    min_steps = int(min_seconds * PHYSICS_HZ)
 
     # Periodic "seek" impulse: without this, perfectly elastic billiard
     # trajectories can drift apart and never intersect again. Each alive
@@ -1185,8 +1232,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
     # is the main thing that makes a clip boring. Per-hit damage is scaled
     # down to match (see `base` in on_hit) so the extra aggression doesn't
     # just end fights faster.
-    BASE_LUNGE_INTERVAL_STEPS = int(0.52 * PHYSICS_HZ)
-    lunge_strength = speed0 * 0.72
+    BASE_LUNGE_INTERVAL_STEPS = int(0.46 * PHYSICS_HZ)
+    lunge_strength = speed0 * 0.85
     max_speed = speed0 * 2.0
     RECOVERY_HEAVY_THRESHOLD = 1.15
     RECOVERY_LIGHT_THRESHOLD = 0.85
@@ -1235,7 +1282,29 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
 
     while step_counter["n"] < max_steps:
         step_counter["n"] += 1
+        pending_hits.clear()
         space.step(dt)
+        for pair in sorted(pending_hits):
+            resolve_hit(pending_hits[pair])
+
+        event_frame = frame_idx  # events belong to the next captured snapshot
+        for i in range(n_fighters):
+            if alive[i] and hp[i] <= 0:
+                alive[i] = False
+                eliminated_at[i] = step_counter["n"]
+                ko_events.append((event_frame, i, bodies[i].position.x, bodies[i].position.y))
+                # Remove every attached blade/head shape and joint. Removing
+                # only the main circle leaves invisible colliders after a KO.
+                owned_bodies = [bodies[i]] + ([chain_bodies[i]] if chain_bodies[i] else [])
+                for body in owned_bodies:
+                    for constraint in list(body.constraints):
+                        if constraint in space.constraints:
+                            space.remove(constraint)
+                    for shape in list(body.shapes):
+                        if shape in space.shapes:
+                            space.remove(shape)
+                    if body in space.bodies:
+                        space.remove(body)
 
         for proj in projectiles:
             if step_counter["n"] - proj["spawn_step"] > PROJECTILE_LIFE_STEPS and proj not in to_remove_projectiles:
@@ -1271,6 +1340,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
                 pshape.elasticity = 0.0
                 pshape.friction = 0.0
                 pshape.collision_type = PROJECTILE_COLLISION_TYPE
+                pshape.filter = pymunk.ShapeFilter(group=i + 1)
                 space.add(pbody, pshape)
                 projectiles.append({"body": pbody, "shape": pshape, "shooter": i, "spawn_step": step_counter["n"]})
                 muzzle_flash_log.append((step_counter["n"], sx, sy, math.degrees(fire_ang)))
@@ -1295,7 +1365,11 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
                 dx = bodies[j].position.x - bodies[i].position.x
                 dy = bodies[j].position.y - bodies[i].position.y
                 dist = max(1.0, math.hypot(dx, dy))
-                jitter = math.radians(rng.uniform(-20, 20))
+                lead = min(.18, dist / (speed0 * 2.5))
+                dx += bodies[j].velocity.x * lead
+                dy += bodies[j].velocity.y * lead
+                dist = max(1.0, math.hypot(dx, dy))
+                jitter = math.radians(rng.uniform(-9, 9))
                 ux, uy = dx / dist, dy / dist
                 ux, uy = ux * math.cos(jitter) - uy * math.sin(jitter), ux * math.sin(jitter) + uy * math.cos(jitter)
                 bodies[i].velocity = (bodies[i].velocity.x + ux * lunge_strength * aggr, bodies[i].velocity.y + uy * lunge_strength * aggr)
@@ -1311,6 +1385,12 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
         cl, ct, cr, cb = _arena_bounds_at(step_counter["n"])
         for i in alive_idx:
             b = bodies[i]
+            # Enforce the speed ceiling after every collision, not just lunges.
+            sp = b.velocity.length
+            if sp > max_speed:
+                b.velocity = b.velocity * (max_speed / sp)
+            b.angular_velocity = max(-MAX_SPIN, min(MAX_SPIN, b.angular_velocity))
+            peak_speed = max(peak_speed, b.velocity.length)
             r = fighter_radii[i]
             px, py = b.position.x, b.position.y
             vx, vy = b.velocity.x, b.velocity.y
@@ -1326,11 +1406,14 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
             if bounced:
                 b.position = (px, py)
                 b.velocity = (vx, vy)
+                if b.velocity.length > max_speed:
+                    b.velocity = b.velocity * (max_speed / b.velocity.length)
                 if step_counter["n"] - last_wall_flash_step[i] >= WALL_FLASH_COOLDOWN_STEPS:
                     last_wall_flash_step[i] = step_counter["n"]
                     wall_hit_log.append((step_counter["n"], px, py))
 
-        if step_counter["n"] % steps_per_frame == 0:
+        terminal = sum(alive) <= 1 or step_counter["n"] >= max_steps
+        if step_counter["n"] * fps >= (frame_idx + 1) * PHYSICS_HZ or terminal:
             pos = []
             chain_pos = []
             for i in range(n_fighters):
@@ -1343,39 +1426,27 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
 
         if hit_log and hit_log[-1][0] == step_counter["n"]:
             _, hx, hy, dmg, hi1, hi2, hit_type, is_crit = hit_log[-1]
-            hit_frame_flags[frame_idx - 1] = (hx, hy, dmg, hi1, hi2, hit_type, is_crit)
+            current = hit_frame_flags.get(event_frame)
+            if current is None or dmg > current[2]:
+                hit_frame_flags[event_frame] = (hx, hy, dmg, hi1, hi2, hit_type, is_crit)
 
         if muzzle_flash_log and muzzle_flash_log[-1][0] == step_counter["n"]:
             _, mfx, mfy, mfang = muzzle_flash_log[-1]
-            muzzle_flash_frames[frame_idx - 1] = (mfx, mfy, mfang)
+            muzzle_flash_frames[event_frame] = (mfx, mfy, mfang)
 
         if projectile_hit_log and projectile_hit_log[-1][0] == step_counter["n"]:
             _, phx, phy, pdmg, pshooter, ptarget = projectile_hit_log[-1]
-            projectile_hit_frames[frame_idx - 1] = (phx, phy, pdmg, pshooter, ptarget)
+            projectile_hit_frames[event_frame] = (phx, phy, pdmg, pshooter, ptarget)
 
         if obstacle_hit_log and obstacle_hit_log[-1][0] == step_counter["n"]:
             _, ohx, ohy = obstacle_hit_log[-1]
-            obstacle_hit_frames[frame_idx - 1] = (ohx, ohy)
+            obstacle_hit_frames[event_frame] = (ohx, ohy)
 
         if wall_hit_log and wall_hit_log[-1][0] == step_counter["n"]:
             _, whx, why = wall_hit_log[-1]
-            wall_hit_frames[frame_idx - 1] = (whx, why)
+            wall_hit_frames[event_frame] = (whx, why)
 
-        for i in range(n_fighters):
-            if alive[i] and hp[i] <= 0:
-                alive[i] = False
-                ko_events.append((frame_idx - 1, i, bodies[i].position.x, bodies[i].position.y))
-                try:
-                    space.remove(bodies[i], shapes[i])
-                except Exception:
-                    pass
-                if chain_bodies[i] is not None:
-                    try:
-                        space.remove(chain_springs[i], chain_bodies[i])
-                    except Exception:
-                        pass
-
-        if step_counter["n"] >= min_steps and sum(alive) <= 1:
+        if terminal:
             break
 
     # Winner = highest remaining HP. Tie-break (mainly for the rare
@@ -1384,10 +1455,9 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
     # eliminated latest — i.e. outlasted the others — wins; fighters who
     # were never eliminated rank above everyone by treating their KO frame
     # as infinite.
-    ko_frame_by_idx = {i: frame for (frame, i, _, _) in ko_events}
     winner_idx = max(
         range(n_fighters),
-        key=lambda i: (hp[i], ko_frame_by_idx.get(i, float("inf"))),
+        key=lambda i: (hp[i], eliminated_at[i] if eliminated_at[i] is not None else float("inf")),
     )
     loser_names = [fighters[i]["name"] for i in range(n_fighters) if i != winner_idx]
 
@@ -1395,13 +1465,15 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
     # on HP (but never eliminated) before pulling out the win — flagged so
     # the finale banner can call it out specially.
     min_winner_hp = min((fr["hp"][winner_idx] for fr in frames), default=START_HP)
-    is_comeback = 0 < min_winner_hp < START_HP * 0.20
+    was_behind = any(fr['hp'][winner_idx] + START_HP * .25 < max(fr['hp'])
+                     for fr in frames if fr['alive'][winner_idx])
+    is_comeback = 0 < min_winner_hp < START_HP * 0.20 and was_behind
 
-    # "Double KO": two or more fighters were eliminated in the exact same
-    # recorded frame — i.e. the fight ended in a genuinely simultaneous
+    # "Double KO": two or more fighters were eliminated in the same physics
+    # step — i.e. the fight ended in a genuinely simultaneous
     # mutual finish, not a clean single winner.
-    last_ko_frame = max((k[0] for k in ko_events), default=None)
-    is_double_ko = last_ko_frame is not None and sum(1 for k in ko_events if k[0] == last_ko_frame) >= 2
+    last_ko_step = max((s for s in eliminated_at if s is not None), default=None)
+    is_double_ko = not any(alive) and last_ko_step is not None and eliminated_at.count(last_ko_step) >= 2
 
     # Slow-mo replay of the finishing blow: take the real frames right around
     # the last recorded hit, duplicate each one (2x slow motion) and append
@@ -1410,40 +1482,59 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=30, min_seconds=8, n_fighter
     # replay of the final clash" beat. hit_frame_flags/ko_events get mirrored
     # entries at the new indices so the flash/damage-popup/KO burst replay
     # too, not just the raw motion.
-    REPLAY_PRE_FRAMES = 10
-    REPLAY_POST_FRAMES = 6
+    live_frames = len(frames)
+    final_live_state = dict(frames[-1])
+    real_ko_events = list(ko_events)
+    REPLAY_PRE_FRAMES = max(1, round(0.22 * fps))
+    REPLAY_POST_FRAMES = max(1, round(0.10 * fps))
     replay_range = None
     replay_focus = None
-    if hit_frame_flags and frames:
-        finishing_hit_frame = max(hit_frame_flags.keys())
+    impact_frames = sorted(set(hit_frame_flags) | set(projectile_hit_frames))
+    if impact_frames and frames and sum(alive) <= 1:
+        finishing_hit_frame = impact_frames[-1]
         r0 = max(0, finishing_hit_frame - REPLAY_PRE_FRAMES)
         r1 = min(len(frames) - 1, finishing_hit_frame + REPLAY_POST_FRAMES)
-        replay_focus = hit_frame_flags[finishing_hit_frame][:2]
+        replay_focus = (hit_frame_flags.get(finishing_hit_frame) or projectile_hit_frames[finishing_hit_frame])[:2]
 
         replay_start = len(frames)
         for src_idx in range(r0, r1 + 1):
             src = frames[src_idx]
-            dup = {"pos": list(src["pos"]), "hp": list(src["hp"]), "alive": list(src["alive"]), "chain_pos": list(src.get("chain_pos", [])), "projectiles": list(src.get("projectiles", []))}
-            for _ in range(2):  # each source frame plays twice => 2x slow-mo
+            dup = dict(src)  # preserve the closing arena and all original state
+            for repeat in range(2):  # each source frame plays twice => 2x slow-mo
                 new_idx = len(frames)
                 frames.append(dict(dup))
-                if src_idx in hit_frame_flags:
-                    hit_frame_flags[new_idx] = hit_frame_flags[src_idx]
-                for (koi, fi, kx, ky) in list(ko_events):
-                    if koi == src_idx:
-                        ko_events.append((new_idx, fi, kx, ky))
+                # Hold the picture twice, but trigger impact audio/KO only once.
+                if repeat == 0:
+                    if src_idx in hit_frame_flags:
+                        hit_frame_flags[new_idx] = hit_frame_flags[src_idx]
+                    if src_idx in projectile_hit_frames:
+                        projectile_hit_frames[new_idx] = projectile_hit_frames[src_idx]
+                    for (koi, fi, kx, ky) in real_ko_events:
+                        if koi == src_idx:
+                            ko_events.append((new_idx, fi, kx, ky))
         replay_range = (replay_start, len(frames))
 
     # Freeze-frame finale: hold the last state and pop victory text for ~1.6s
     finale_frames = int(1.6 * fps)
     if frames:
-        last = dict(frames[-1])
+        last = final_live_state  # a replay must never resurrect a defeated fighter
         last["pos"] = list(last["pos"])
         for _ in range(finale_frames):
             frames.append(dict(last))
 
     return {
         "frames": frames,
+        "live_frames": live_frames,
+        "duration_seconds": step_counter["n"] / PHYSICS_HZ,
+        "finish_reason": "double_ko" if not any(alive) else "ko" if sum(alive) == 1 else "timeout",
+        "real_ko_events": real_ko_events,
+        "min_seconds_target": min_seconds,
+        "diagnostics": {
+            "orphan_shapes": sum(s.collision_type in ctype_to_idx and not alive[ctype_to_idx[s.collision_type]] for s in space.shapes),
+            "peak_speed": peak_speed,
+            "speed_limit": max_speed,
+            "exchanges": len(hit_log),
+        },
         "hit_frame_flags": hit_frame_flags,
         "obstacle_hit_frames": obstacle_hit_frames,
         "wall_hit_frames": wall_hit_frames,
@@ -1538,7 +1629,7 @@ WIN_TEXT_TEMPLATES = [
     "{name} TAKES IT!",
     "{name} IS VICTORIOUS!",
     "{name} SURVIVES!",
-    "{name} DOMINATES!",
+    "{name} WINS THE ARENA!",
 ]
 
 KO_TEXT_TEMPLATES = [
@@ -1751,7 +1842,7 @@ def build_battle_clip(battle):
     # rather than a speed blur and hurt readability, especially on small
     # ones like Dagger. A blurred ghost reads as motion, not a duplicate.
     trail_icons = [icon.filter(ImageFilter.GaussianBlur(icon_size * 0.035)) for icon in icons]
-    ko_frame_by_idx = {i: frame for (frame, i, _, _) in battle["ko_events"]}
+    ko_frames_by_idx = {i: [frame for frame, fi, _, _ in battle["ko_events"] if fi == i] for i in range(n)}
     first_hit_frame = min(battle["hit_frame_flags"].keys()) if battle["hit_frame_flags"] else None
     FIRST_BLOOD_FRAMES = int(fps * 0.9)
 
@@ -1842,17 +1933,13 @@ def build_battle_clip(battle):
 
     intro_frames = int(INTRO_SECONDS * fps)
 
-    # Cold-open source frame: the moment the finishing blow lands, before
-    # any "{name} OUT!"/victory text has appeared (those render at later
-    # frame indices), so the tease shows real impact without giving away
-    # who wins. Falls back to the last real hit, or just the final frame,
-    # if a battle somehow has no replay (shouldn't normally happen).
-    if battle.get("replay_range"):
-        cold_open_src_idx = battle["replay_range"][0]
-    elif battle["hit_frame_flags"]:
-        cold_open_src_idx = max(battle["hit_frame_flags"].keys())
-    else:
-        cold_open_src_idx = max(0, n_frames - 1)
+    # Use a strong live exchange before the first elimination, never a replay
+    # or a terminal frame. The opening therefore cannot reveal the winner.
+    live_end = battle.get("live_frames", finale_start)
+    first_ko = min((k[0] for k in battle.get("real_ko_events", battle["ko_events"])), default=live_end)
+    hook_hits = [(idx, event) for idx, event in battle["hit_frame_flags"].items()
+                 if 0 <= idx < min(first_ko, live_end) and sum(frames[idx]["alive"]) >= 2]
+    cold_open_src_idx = max(hook_hits, key=lambda item: item[1][2])[0] if hook_hits else max(0, min(first_ko - 1, round(fps)))
 
     TRAIL_STEPS = ((3, 65), (7, 28))  # (frames back, alpha) — kept short/faint
     KO_FADE_FRAMES = 12
@@ -1931,13 +2018,13 @@ def build_battle_clip(battle):
     def make_frame(t):
         orig_t = t
         if t < COLD_OPEN_SECONDS:
-            # Render the normal frame for the finishing-blow moment (via a
-            # self-recursive call at the shifted timestamp it actually
-            # falls at post-cold-open) and punch it up: a slow zoom-in for
-            # tension, a quick white impact-flash at the very start to grab
-            # a scrolling viewer's eye, and a fade to black right before
-            # the cut into the "3-2-1" countdown.
-            base_t = COLD_OPEN_SECONDS + INTRO_SECONDS + cold_open_src_idx / fps
+            # A short moving excerpt of an actual early exchange; no winner
+            # reveal, replay label or blank first frame before the matchup.
+            # Show the actual impact at 0.2s, then its follow-through. Clamp
+            # before the first KO so the opening cannot reveal the result.
+            source_idx = max(0, min(first_ko - 1, live_end - 1,
+                                   cold_open_src_idx + round((t - .2) * fps * .65)))
+            base_t = COLD_OPEN_SECONDS + INTRO_SECONDS + source_idx / fps
             arr = make_frame(base_t).astype(np.float32)
             zoom = 1.05 + 0.15 * (t / COLD_OPEN_SECONDS)
             zw, zh = max(1, int(w / zoom)), max(1, int(h / zoom))
@@ -1946,11 +2033,18 @@ def build_battle_clip(battle):
             arr = np.array(zimg).astype(np.float32)
             if t < 0.15:
                 flash_amt = (1.0 - t / 0.15) ** 1.5
-                arr = arr + (255 - arr) * flash_amt * 0.85
+                arr = arr + (255 - arr) * flash_amt * 0.18
             fade_start = COLD_OPEN_SECONDS - 0.12
             if t > fade_start:
                 arr = arr * (1 - (t - fade_start) / 0.12)
-            return np.clip(arr, 0, 255).astype(np.uint8)
+            hook_image = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).convert("RGBA")
+            hook_draw = ImageDraw.Draw(hook_image, "RGBA")
+            hook_text = "PICK YOUR WINNER"
+            hook_font = get_font(int(h * .034))
+            text_width = hook_draw.textlength(hook_text, font=hook_font)
+            hook_draw.rounded_rectangle((w * .12, h * .19, w * .88, h * .255), radius=14, fill=(8, 12, 8, 215))
+            hook_draw.text(((w - text_width) / 2, h * .197), hook_text, font=hook_font, fill=(221, 255, 155, 255))
+            return np.array(hook_image.convert("RGB"))
 
         t = t - COLD_OPEN_SECONDS
         raw_idx = int(round(t * fps))
@@ -2024,8 +2118,12 @@ def build_battle_clip(battle):
             for (ox, oy) in obstacles:
                 img.alpha_composite(obstacle_icon, (int(ox - obstacle_icon.width / 2), int(oy - obstacle_icon.height / 2)))
 
-        tw = d.textlength(title_text, font=title_font)
-        d.text((w / 2 - tw / 2, h * 0.045), title_text, font=title_font, fill=(255, 255, 255, 255))
+        display_title_font = title_font
+        tw = d.textlength(title_text, font=display_title_font)
+        if tw > w * .90:
+            display_title_font = get_font(max(14, int(title_font.size * w * .90 / tw)))
+            tw = d.textlength(title_text, font=display_title_font)
+        d.text((w / 2 - tw / 2, h * 0.045), title_text, font=display_title_font, fill=(255, 255, 255, 255))
 
         danger_pulse = 0.5 + 0.5 * math.sin(t * 9.0)
         CHIP_DECAY_FRAMES = int(fps * 0.6)
@@ -2160,7 +2258,7 @@ def build_battle_clip(battle):
             else:
                 fb_alpha = max(0, int(255 * (1 - (first_blood_age - fade_start) / max(1, FIRST_BLOOD_FRAMES - fade_start))))
             fbf = get_font(int(first_blood_font.size * pop)) if hasattr(first_blood_font, "size") else first_blood_font
-            fb_text = "FIRST BLOOD!"
+            fb_text = "FIRST CLASH!"
             fbw = d.textlength(fb_text, font=fbf)
             d.text((w / 2 - fbw / 2, h * 0.30), fb_text, font=fbf, fill=(255, 60, 40, fb_alpha), stroke_width=4, stroke_fill=(0, 0, 0, fb_alpha))
 
@@ -2382,7 +2480,7 @@ def build_battle_clip(battle):
                         d.ellipse([hx2 - orb_r, hy2 - orb_r, hx2 + orb_r, hy2 + orb_r], fill=(*col, 220))
                         d.ellipse([hx2 - orb_r * 0.5, hy2 - orb_r * 0.5, hx2 + orb_r * 0.5, hy2 + orb_r * 0.5], fill=(255, 255, 255, 200))
             else:
-                ko_frame = ko_frame_by_idx.get(i)
+                ko_frame = max((frame for frame in ko_frames_by_idx[i] if frame <= idx), default=None)
                 if ko_frame is not None:
                     age = idx - ko_frame
                     if 0 <= age < KO_FADE_FRAMES:

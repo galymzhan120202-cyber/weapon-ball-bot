@@ -9,20 +9,22 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from moviepy import AudioFileClip, AudioArrayClip, CompositeAudioClip
 import sys
-import io
 import json
 import logging
 import time
 from dotenv import load_dotenv
 import traceback
 import glob
+from urllib.parse import urlencode
 
 import numpy as np
 
-from battle_sim import simulate_battle, build_battle_clip, build_sfx_array, generate_thumbnail, INTRO_SECONDS, COLD_OPEN_SECONDS, SR as SFX_SR, WEAPON_POOL
+from battle_sim import build_battle_clip, build_sfx_array, generate_thumbnail, INTRO_SECONDS, COLD_OPEN_SECONDS, SR as SFX_SR, WEAPON_POOL
+from battle_director import select_battle, battle_manifest
 
 # UTF-8 кодтеуін орнату консоль үшін
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
 # .env файлын жүктеу
 load_dotenv()
@@ -41,7 +43,7 @@ BATTLE_MAX_SECONDS = int(os.getenv('BATTLE_MAX_SECONDS', '28'))
 BATTLE_MIN_SECONDS = int(os.getenv('BATTLE_MIN_SECONDS', '8'))
 
 AVOID_REPEAT_LOOKBACK = int(os.getenv('AVOID_REPEAT_LOOKBACK', '12'))
-AVOID_REPEAT_MAX_ATTEMPTS = int(os.getenv('AVOID_REPEAT_MAX_ATTEMPTS', '6'))
+BATTLE_CANDIDATES = max(1, min(24, int(os.getenv('BATTLE_CANDIDATES', '6'))))
 
 YOUTUBE_CATEGORY_ID = os.getenv('YOUTUBE_CATEGORY_ID', '20')  # 20 = Gaming
 YOUTUBE_PRIVACY_STATUS = os.getenv('YOUTUBE_PRIVACY_STATUS', 'public')
@@ -75,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 STRONG_HASHTAG_POOL = [
     "#shorts", "#weaponfight", "#ballfight", "#battle", "#satisfying",
-    "#physics", "#fyp", "#viral", "#versus", "#whowins", "#simulation",
+    "#physics", "#versus", "#whowins", "#simulation",
 ]
 
 TITLE_TEMPLATES_2 = [
@@ -94,29 +96,16 @@ TITLE_TEMPLATES_MULTI = [
 ]
 
 DESCRIPTION_TEMPLATES = [
-    "{names} — full physics weapon ball battle!\n"
-    "Winner: {winner} 🏆\n\n"
-    "Fully generated battle, zero footage, zero copyright risk. New fight every upload.",
-
-    "⚔️🔥 {names} just went head to head in a totally random physics arena!\n\n"
-    "🏆 Winner: {winner}\n\n"
-    "No script, no real footage — just pure chaotic physics. New battle every day!",
-
-    "Only ONE weapon walks away... 💥\n\n"
-    "{names}\n"
-    "🏆 {winner} takes the win!\n\n"
-    "Every matchup, every arena, every outcome — 100% randomly generated.",
-
-    "🎲 Random matchup. Zero rules. One winner.\n\n"
-    "{names} → {winner} wins!\n\n"
-    "New chaos every single upload — who do you think should've won?",
-
-    "{names} threw down in the arena and only {winner} made it out. 🏆\n\n"
-    "Fully code-generated battle — no scripts, no stock footage, no copyright risk.",
+    "{names}. Pick your winner before the first clash.\n\n"
+    "Real simulated collisions, spinning weapons and a closing arena. The physics decides the outcome.\n"
+    "Which two weapons should face off next?",
+    "One arena. One survivor. {names}.\n\n"
+    "A real physics battle, selected for its action and rendered from code. Watch the final exchange.\n"
+    "What would you take into the arena?",
 ]
 
 
-def pick_rotating_tags(count=6):
+def pick_rotating_tags(count=4):
     return ' '.join(random.sample(STRONG_HASHTAG_POOL, min(count, len(STRONG_HASHTAG_POOL))))
 
 
@@ -134,7 +123,10 @@ def build_title_and_description(fighter_names, winner_name):
     body = random.choice(DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
     links = []
     if PLAY_URL:
-        links.append(f"🎮 Play it free in your browser: {PLAY_URL}")
+        kinds = {w['name']: w['kind'] for w in WEAPON_POOL}
+        query = urlencode({'weapons': ','.join(kinds[n] for n in fighter_names if n in kinds), 'n': len(fighter_names)})
+        matchup_url = PLAY_URL + ('&' if '?' in PLAY_URL else '?') + query
+        links.append(f"🎮 Try this matchup in your browser: {matchup_url}")
     if FUND_URL:
         links.append(f"🎯 Help bring Weapon Ball to the App Store & Google Play: {FUND_URL}")
     link_block = ("\n".join(links) + "\n\n") if links else ""
@@ -458,35 +450,26 @@ def cleanup_temp_files():
                 pass
 
 
-def generate_video(skip_upload: bool = False, n_fighters: int = None):
+def generate_video(skip_upload: bool = False, n_fighters: int = None, offline: bool = False, seed=None):
+    if offline and not skip_upload:
+        raise ValueError("offline=True requires skip_upload=True")
     try:
         logger.info("🎬 Weapon Ball видео құру процессі басталды")
 
         ensure_directories_exist()
         cleanup_temp_files()
 
-        recent_matchups = get_recent_matchups(AVOID_REPEAT_LOOKBACK)
-
-        seed = random.randint(1, 2**31 - 1)
-        battle = simulate_battle(
+        recent_matchups = [] if offline else get_recent_matchups(AVOID_REPEAT_LOOKBACK)
+        seed = random.randint(1, 2**31 - 1) if seed is None else int(seed)
+        battle = select_battle(
             w=VIDEO_WIDTH, h=VIDEO_HEIGHT, seed=seed, fps=VIDEO_FPS,
+            candidates=BATTLE_CANDIDATES, recent_matchups=recent_matchups,
             max_seconds=BATTLE_MAX_SECONDS, min_seconds=BATTLE_MIN_SECONDS,
             n_fighters=n_fighters,
         )
         fighter_names = [f["name"] for f in battle["fighters"]]
 
-        attempts = 1
-        while frozenset(fighter_names) in recent_matchups and attempts < AVOID_REPEAT_MAX_ATTEMPTS:
-            seed = random.randint(1, 2**31 - 1)
-            battle = simulate_battle(
-                w=VIDEO_WIDTH, h=VIDEO_HEIGHT, seed=seed, fps=VIDEO_FPS,
-                max_seconds=BATTLE_MAX_SECONDS, min_seconds=BATTLE_MIN_SECONDS,
-                n_fighters=n_fighters,
-            )
-            fighter_names = [f["name"] for f in battle["fighters"]]
-            attempts += 1
-        if attempts > 1:
-            logger.info(f"🔁 Қайталанатын матчап аттап өтілді ({attempts} әрекет)")
+        logger.info("Selected seed %s from %s candidates: %s", battle['seed'], BATTLE_CANDIDATES, battle['selection']['chosen'])
 
         winner_name = battle["winner_name"]
         logger.info(f"⚔️ Шайқас ({battle['n_fighters']}): {' vs '.join(fighter_names)} — жеңімпаз: {winner_name}")
@@ -495,6 +478,10 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
             fighter_names, winner_name
         )
         logger.info(f"🏷️ Тақырып: {video_title}")
+        manifest = battle_manifest(battle)
+        manifest['title'] = video_title
+        with open(os.path.join(base_dir, 'battle_manifest.json'), 'w', encoding='utf-8') as manifest_file:
+            json.dump(manifest, manifest_file, ensure_ascii=False, indent=2)
 
         thumbnail_path = os.path.join(base_dir, "thumbnail.jpg")
         try:
@@ -522,7 +509,7 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
             music_path = None
             music_attribution = None
             try:
-                music_result = fetch_openverse_music(duration)
+                music_result = None if offline else fetch_openverse_music(duration)
                 if music_result:
                     music_path, music_attribution = music_result
                 if not music_path:
@@ -619,7 +606,8 @@ def generate_video(skip_upload: bool = False, n_fighters: int = None):
     except Exception as e:
         logger.error(f"❌ Қате: {e}")
         logger.debug(traceback.format_exc())
-        send_telegram(f"❌ <b>Weapon Ball видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
+        if not offline:
+            send_telegram(f"❌ <b>Weapon Ball видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
         raise
 
 

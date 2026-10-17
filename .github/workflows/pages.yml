@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
-    paths: [index.html, .github/workflows/pages.yml]
+    paths: [index.html, 'web/**', 'fonts/**', .github/workflows/pages.yml]
 
 permissions:
   contents: read
@@ -30,6 +30,7 @@ jobs:
         run: |
           mkdir _site
           cp index.html _site/
+          cp -R web fonts _site/
           touch _site/.nojekyll
 
       - uses: actions/configure-pages@v5
