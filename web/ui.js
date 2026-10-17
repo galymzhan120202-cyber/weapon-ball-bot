@@ -81,16 +81,24 @@
     if (dialog.dataset.resume === 'true') game.pause(true);
     dialog.showModal();
   }
-  function closeDialog(dialog) { if (dialog.open) dialog.close(); }
+  function resumeAfterDialog(dialog) {
+    if (dialog.open) return;
+    const shouldResume = dialog.dataset.resume === 'true';
+    dialog.dataset.resume = 'false';
+    if (shouldResume) { game.pause(false); $('c').focus({ preventScroll: true }); }
+  }
+  function closeDialog(dialog) {
+    if (!dialog.open) return;
+    dialog.close();
+    // The native close event is queued; restore controls before the next key.
+    resumeAfterDialog(dialog);
+  }
   document.querySelectorAll('dialog').forEach(dialog => {
     dialog.addEventListener('keydown', event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeDialog(dialog); }
     });
     dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => closeDialog(dialog)));
-    dialog.addEventListener('close', () => {
-      if (dialog.dataset.resume === 'true') { game.pause(false); $('c').focus({ preventScroll: true }); }
-      dialog.dataset.resume = 'false';
-    });
+    dialog.addEventListener('close', () => resumeAfterDialog(dialog));
     dialog.addEventListener('click', event => {
       const rect = dialog.getBoundingClientRect();
       if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeDialog(dialog);

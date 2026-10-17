@@ -71,6 +71,20 @@ test('keyboard dialogs, filtering and empty results remain usable', async () => 
   assert.deepEqual(page.errors, []); await page.close();
 });
 
+test('resume restores controls immediately so the next shortcut is not lost', async () => {
+  const page = await open('mut=0&hz=0');
+  await page.click('#start-match');
+  await page.click('#pause-match');
+  const resumed = await page.evaluate(() => {
+    document.querySelector('#resume-match').click();
+    const focused = document.activeElement.id;
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'m',bubbles:true}));
+    return {focused, paused:WBA.paused, muted:WBA.muted, dialogOpen:document.querySelector('#pause-dialog').open};
+  });
+  assert.deepEqual(resumed,{focused:'c',paused:false,muted:false,dialogOpen:false});
+  assert.deepEqual(page.errors,[]);await page.close();
+});
+
 test('shared four-fighter loadouts preserve every slot and allow individual changes', async () => {
   const page = await open('weapons=sword,axe,rapier,whip&mut=0&hz=0');
   assert.equal(await page.locator('#pick-d').isVisible(),true);
